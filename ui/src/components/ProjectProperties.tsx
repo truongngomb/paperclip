@@ -16,6 +16,7 @@ import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Loader2, Trash2 } from "lucide-react";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
@@ -31,6 +32,8 @@ interface ProjectPropertiesProps {
   getFieldSaveState?: (field: ProjectConfigFieldKey) => ProjectFieldSaveState;
   onArchive?: (archived: boolean) => void;
   archivePending?: boolean;
+  onDelete?: () => void;
+  deletePending?: boolean;
 }
 
 export type ProjectFieldSaveState = "idle" | "saving" | "saved" | "error";
@@ -202,7 +205,7 @@ function ArchiveDangerZone({
   );
 }
 
-export function ProjectProperties({ project, repositories, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
+export function ProjectProperties({ project, repositories, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending, onDelete, deletePending }: ProjectPropertiesProps) {
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -210,6 +213,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   const [workspaceMode, setWorkspaceMode] = useState<"local" | null>(null);
   const [workspaceCwd, setWorkspaceCwd] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   const commitField = (field: ProjectConfigFieldKey, data: Record<string, unknown>) => {
     if (onFieldUpdate) {
@@ -995,7 +999,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
 
       </div>
 
-      {onArchive && (
+      {(onArchive || onDelete) && (
         <>
           <Separator className="my-4" />
           <div className="space-y-4 py-4">
@@ -1004,9 +1008,49 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
             </div>
             <ArchiveDangerZone
               project={project}
-              onArchive={onArchive}
+              onArchive={onArchive ?? (() => {})}
               archivePending={archivePending}
             />
+            {onDelete && project.archivedAt && (
+              <div className="pt-3 border-t border-destructive/20 space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  Permanently delete this project and all of its tasks. This action cannot be undone.
+                </p>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => setDeleteDialogOpen(true)}
+                  disabled={deletePending}
+                >
+                  <Trash2 className="h-3 w-3 mr-1" />
+                  {deletePending ? "Deleting..." : "Delete project permanently"}
+                </Button>
+                <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete project permanently?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Are you sure you want to permanently delete &ldquo;{project.name}&rdquo; and all of its tasks? This action cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel disabled={deletePending}>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        disabled={deletePending}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setDeleteDialogOpen(false);
+                          onDelete();
+                        }}
+                      >
+                        {deletePending ? "Deleting..." : "Delete project"}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            )}
           </div>
         </>
       )}
