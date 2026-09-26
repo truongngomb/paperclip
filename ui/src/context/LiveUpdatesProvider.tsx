@@ -1279,6 +1279,13 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
   }
 
+  // Deleting a managed AI account goes through the generic tool-connection
+  // archive path, so the same refetch is needed for the AI pickers.
+  if (action === "tool_connection.archived") {
+    queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(companyId) });
+  }
+
   if (action?.startsWith("resource_membership.")) {
     const targetUserId = readString(details?.userId);
     if (!targetUserId || targetUserId === currentActor.userId) {

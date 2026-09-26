@@ -522,6 +522,43 @@ describe("Agents", () => {
     expect(row?.textContent).not.toContain("Pause");
   });
 
+  it("renders skills information for agents in the list", async () => {
+    mockRouterState.pathname = "/agents/all";
+    const agentWithSkills = makeAgent({
+      id: "skilled-agent",
+      name: "Skilled Agent",
+      adapterConfig: {
+        paperclipSkillSync: {
+          desiredSkills: [
+            "paperclipai/paperclip/paperclip",
+            "company/company-1/frontend-architect",
+            "company/company-1/vue-expert",
+          ],
+        },
+      },
+    });
+    mockAgentsApi.list.mockResolvedValue([agentWithSkills]);
+    mockAgentsApi.org.mockResolvedValue([]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const row = findAgentRow(container, "Skilled Agent");
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("frontend-architect");
+    expect(row?.textContent).toContain("vue-expert");
+  });
+
   it("uses the built-in agents route segment as the built-in filter", async () => {
     mockRouterState.pathname = "/agents/builtin";
     mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));

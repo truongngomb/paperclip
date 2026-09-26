@@ -92,6 +92,37 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("preserves an explicit managed-connection clear in runtime config", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      ...agent.runtimeConfig,
+      aiConnection: {
+        provider: "openai",
+        method: "subscription",
+        mode: "responsible_user",
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        runtime: {
+          runtimeConfig: {
+            ...agent.runtimeConfig,
+            aiConnection: null,
+          },
+        },
+      }),
+    );
+
+    expect(patch).toEqual({
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 300 },
+        aiConnection: null,
+      },
+    });
+  });
+
   it("writes max-turn continuation policy under runtimeConfig.heartbeat", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

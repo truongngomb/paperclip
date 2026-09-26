@@ -24,8 +24,11 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { AlertTriangle, Bot, Plus, List, GitBranch, Wrench } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
+import { companySkillsApi } from "../api/companySkills";
+import { getAgentSkillNames } from "./Agents";
 import {
   isStarred,
   resourceMembershipState,
@@ -255,6 +258,20 @@ export function Agents() {
     enabled: !!selectedCompanyId && environmentsEnabled,
   });
 
+  const { data: companySkills } = useQuery({
+    queryKey: queryKeys.companySkills.list(selectedCompanyId!),
+    queryFn: () => companySkillsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const skillNamesByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const skill of companySkills ?? []) {
+      map.set(skill.key, skill.name);
+    }
+    return map;
+  }, [companySkills]);
+
   const runsQueryKey = [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"] as const;
   const sharedRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
@@ -356,6 +373,7 @@ export function Agents() {
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
     const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
+    const skills = getAgentSkillNames(agent, skillNamesByKey);
     // Lifecycle chip + inline `Set up`. Rendered inline in
     // `meta` at xl (where there's room and the meta columns align) and on a
     // dedicated full-width line beneath the name below xl, so the chips never
@@ -390,9 +408,9 @@ export function Agents() {
         // columns line up vertically. Below xl the meta columns are hidden, so
         // the title flexes instead: a fixed width there let the shrink-0
         // trailing actions squeeze the name to zero width on mobile.
-        titleClassName="flex-1 xl:flex-none xl:w-56"
-        titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
-        subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
+        titleClassName="flex-1 md:flex-none md:w-56"
+        titleTextClassName="whitespace-normal break-words md:truncate md:whitespace-nowrap"
+        subtitleClassName="whitespace-normal break-words md:truncate md:whitespace-nowrap"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
         className={cn(
@@ -407,7 +425,7 @@ export function Agents() {
         )}
         secondaryRow={
           builtInCluster ? (
-            <div className="xl:hidden flex flex-wrap items-center gap-1.5">
+            <div className="md:hidden flex flex-wrap items-center gap-1.5">
               {builtInCluster}
             </div>
           ) : undefined
@@ -415,20 +433,21 @@ export function Agents() {
         meta={
           <div className="flex items-center gap-3">
             {builtInCluster && (
-              <div className="hidden xl:flex items-center gap-1.5">
+              <div className="hidden md:flex items-center gap-1.5">
                 {builtInCluster}
               </div>
             )}
-            <div className="hidden xl:flex items-center gap-3">
+            <div className="hidden md:flex items-center gap-3">
               <AgentMetaColumns
                 agent={agent}
                 environment={resolveRenderedEnvironment(agent.id)}
                 showEnvironment={showEnvironmentColumn}
+                skills={skills}
               />
             </div>
           </div>
         }
-        metaSpacerClassName="hidden xl:block"
+        metaSpacerClassName="hidden md:block"
         trailing={
           <div className="flex items-center gap-3">
             <div className="hidden sm:flex items-center gap-3">
@@ -794,13 +813,17 @@ function AgentMetaColumns({
   agent,
   environment,
   showEnvironment,
+  skills = [],
 }: {
   agent: Agent;
   environment: EnvironmentDescriptor;
   showEnvironment: boolean;
+  skills?: string[];
 }) {
   const model = getConfiguredModel(agent);
   const adapterLabel = getAdapterLabel(agent.adapterType);
+  const specializedSkills = skills.filter((s) => s !== "paperclip");
+
   return (
     <>
       <div className="w-44 min-w-0 leading-tight">
@@ -824,6 +847,36 @@ function AgentMetaColumns({
           </div>
         </div>
       )}
+      <div
+        className="w-72 min-w-0 leading-tight hidden xl:block"
+        title={
+          specializedSkills.length > 0
+            ? `Specialized skills (${specializedSkills.length}): ${specializedSkills.join(", ")}`
+            : "No specialized skills"
+        }
+      >
+        {specializedSkills.length > 0 ? (
+          <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
+              {specializedSkills.slice(0, 2).map((skill) => (
+                <span
+                  key={skill}
+                  className="inline-block truncate max-w-[120px] rounded bg-muted/70 border border-border/50 px-1.5 py-0.5 text-(length:--text-micro) font-mono text-muted-foreground"
+                >
+                  {skill}
+                </span>
+              ))}
+            </div>
+            {specializedSkills.length > 2 && (
+              <span className="shrink-0 text-(length:--text-micro) font-mono text-muted-foreground/70">
+                +{specializedSkills.length - 2}
+              </span>
+            )}
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground/40 font-mono">—</span>
+        )}
+      </div>
       <span className="w-24 whitespace-nowrap text-right text-xs text-muted-foreground">
         {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
       </span>

@@ -1,6 +1,7 @@
 import { AgentCharacter } from "../AgentCharacter";
 import { useAgentAppearanceDraft } from "../../hooks/useAgentAppearanceDraft";
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
+import { AiConnectionCredentialStep } from "../ai-connections/AiConnectionCredentialStep";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
@@ -151,6 +152,7 @@ function Setup({
       : undefined,
   );
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
+  const [gatewaySetup, setGatewaySetup] = useState(false);
   const aiBinding = runtimeAiBinding ?? connection?.aiConnection;
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("");
@@ -443,8 +445,11 @@ function Setup({
       return (
         !blocking(tested) &&
         (!connectionAdapter ||
+          // API-key connectors are verified against their provider at adoption;
+          // only subscription logins need the provider CLI hello probe.
           tested.checks.some((check) =>
-            check.code.endsWith("hello_probe_passed"),
+            check.code.endsWith("hello_probe_passed") ||
+            check.code === "ai_connection_api_key_reverified",
           ))
       );
     } catch (cause) {
@@ -717,34 +722,77 @@ function Setup({
                         center
                       />
                     </div>
-                    <AgentProviderConnection
-                      key={environmentId ?? "local"}
-                      companyId={companyId}
-                      adapterType={connectionAdapter}
-                      environmentId={environmentId}
-                      canLogin={canLogin}
-                      localEnvironment={environment?.driver === "local"}
-                      onBack={() => navigate("/agents/all")}
-                      testConnection={runTest}
-                      testError={
-                        error ??
-                        (
-                          result?.checks.find(
-                            (check) => check.level === "error",
-                          ) ??
-                          result?.checks.find(
-                            (check) =>
-                              check.code.includes("hello_probe") &&
-                              check.level === "warn",
-                          )
-                        )?.message
-                      }
-                      onConnected={(next) => {
-                        setConnection(next);
-                        resetTest();
-                        setScreen("runtime");
-                      }}
-                    />
+                    {gatewaySetup ? (
+                      <AiConnectionCredentialStep
+                        companyId={companyId}
+                        provider="openai_compatible"
+                        name={`My ${name} gateway`}
+                        ownership="personal"
+                        agentIds={[]}
+                        allAgents={true}
+                        environmentId={environmentId ?? undefined}
+                        onCancel={() => setGatewaySetup(false)}
+                        onComplete={(result) => {
+                          const next: ProviderConnection = {
+                            env: {},
+                            aiConnection: {
+                              provider: "openai_compatible",
+                              method: result.method,
+                              mode: "responsible_user",
+                            },
+                          };
+                          setGatewaySetup(false);
+                          setConnection(next);
+                          // The provider already verified the key. Move to the
+                          // runtime form even if its environment probe fails so
+                          // the user can inspect it and retry without retyping.
+                          void runTest(next).then(() => setScreen("runtime"));
+                        }}
+                      />
+                    ) : (
+                      <>
+                        <AgentProviderConnection
+                          key={environmentId ?? "local"}
+                          companyId={companyId}
+                          adapterType={connectionAdapter}
+                          environmentId={environmentId}
+                          canLogin={canLogin}
+                          localEnvironment={environment?.driver === "local"}
+                          onBack={() => navigate("/agents/all")}
+                          testConnection={runTest}
+                          testError={
+                            error ??
+                            (
+                              result?.checks.find(
+                                (check) => check.level === "error",
+                              ) ??
+                              result?.checks.find(
+                                (check) =>
+                                  check.code.includes("hello_probe") &&
+                                  check.level === "warn",
+                              )
+                            )?.message
+                          }
+                          onConnected={(next) => {
+                            setConnection(next);
+                            resetTest();
+                            setScreen("runtime");
+                          }}
+                        />
+                        {connectionAdapter === "codex_local" && (
+                          <div className="mt-4 border-t border-border pt-4">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="w-full justify-start"
+                              onClick={() => setGatewaySetup(true)}
+                            >
+                              Use an OpenAI-compatible gateway
+                            </Button>
+                          </div>
+                        )}
+                      </>
+                    )}
                   </OnboardingCard>
                 ) : screen === "saved" && created ? (
                   <div className="space-y-6">
@@ -823,7 +871,7 @@ function Setup({
                             </div>
                           ) : (
                             <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
-                              onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />
+                              onChange={binding => { setRuntimeAiBinding(binding ?? undefined); resetTest(); }} />
                           )
                         )}
                         {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}

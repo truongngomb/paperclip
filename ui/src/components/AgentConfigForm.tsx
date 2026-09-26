@@ -593,6 +593,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
+  const effectiveAiConnection = useMemo(() => {
+    const draftRuntimeConfig = overlay.runtime.runtimeConfig;
+    if (
+      typeof draftRuntimeConfig === "object" &&
+      draftRuntimeConfig !== null &&
+      Object.prototype.hasOwnProperty.call(draftRuntimeConfig, "aiConnection")
+    ) {
+      return aiConnectionBindingSchema.safeParse(
+        (draftRuntimeConfig as Record<string, unknown>).aiConnection,
+      ).data;
+    }
+    return aiConnectionBindingSchema.safeParse(runtimeConfig.aiConnection).data;
+  }, [overlay.runtime.runtimeConfig, runtimeConfig]);
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
   const debug = !isCreate ? ((runtimeConfig.debug ?? {}) as Record<string, unknown>) : {};
 
@@ -887,16 +900,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ? "Paperclip Computer"
       : "Local";
 
+  const effectiveRuntimeConfig = useMemo(() => {
+    if (isCreate) {
+      return {
+        heartbeat: {
+          enabled: val!.heartbeatEnabled,
+          intervalSec: val!.intervalSec,
+        },
+      };
+    }
+    const mergedHeartbeat = {
+      ...(runtimeConfig.heartbeat && typeof runtimeConfig.heartbeat === "object"
+        ? runtimeConfig.heartbeat as Record<string, unknown>
+        : {}),
+      ...overlay.heartbeat,
+    };
+    return {
+      ...runtimeConfig,
+      heartbeat: mergedHeartbeat,
+    };
+  }, [isCreate, overlay.heartbeat, runtimeConfig, val]);
+
   const runnerProvider = adapterType === "paperclip_runner"
     ? String(isCreate ? props.values.adapterSchemaValues?.provider ?? "codex"
       : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex"))
     : undefined;
-  const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
-    (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
-  ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
+  const modelProvider = adapterType === "opencode_local" && effectiveAiConnection?.provider === "openrouter"
+    ? "openrouter"
+    : runnerProvider;
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, modelProvider)
+    ? queryKeys.agents.adapterModels(
+        selectedCompanyId,
+        adapterType,
+        currentDefaultEnvironmentId || null,
+        modelProvider,
+        isCreate ? undefined : props.agent.id,
+      )
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
@@ -906,6 +946,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
       environmentId: currentDefaultEnvironmentId || null,
       provider: modelProvider,
+      agentId: isCreate ? undefined : props.agent.id,
     }),
     enabled: Boolean(selectedCompanyId),
   });
@@ -1061,9 +1102,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       });
       const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
       const agentId = isCreate ? undefined : props.agent.id;
-      const aiConnection = isCreate ? undefined : aiConnectionBindingSchema.safeParse(
-        (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
-      ).data;
+      const aiConnection = isCreate ? undefined : effectiveAiConnection;
       if (props.compactTestFeedback) {
         const providerAdapter = adapterType === "paperclip_runner"
           ? adapterConfig.provider === "codex" ? "codex_local"
@@ -1148,7 +1187,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
   const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
-    (isCreate || !((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection)) &&
+    (isCreate || !effectiveAiConnection) &&
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
@@ -1253,7 +1292,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, {
+        refresh: true,
+        environmentId: currentDefaultEnvironmentId || null,
+        provider: modelProvider,
+        agentId: isCreate ? undefined : props.agent.id,
+      });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -1310,26 +1354,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
-  const effectiveRuntimeConfig = useMemo(() => {
-    if (isCreate) {
-      return {
-        heartbeat: {
-          enabled: val!.heartbeatEnabled,
-          intervalSec: val!.intervalSec,
-        },
-      };
-    }
-    const mergedHeartbeat = {
-      ...(runtimeConfig.heartbeat && typeof runtimeConfig.heartbeat === "object"
-        ? runtimeConfig.heartbeat as Record<string, unknown>
-        : {}),
-      ...overlay.heartbeat,
-    };
-    return {
-      ...runtimeConfig,
-      heartbeat: mergedHeartbeat,
-    };
-  }, [isCreate, overlay.heartbeat, runtimeConfig, val]);
   const effectiveHeartbeat = asObject(effectiveRuntimeConfig.heartbeat);
   const maxTurnContinuation = asObject(effectiveHeartbeat.maxTurnContinuation);
   const maxTurnContinuationEnabled = asBoolean(maxTurnContinuation.enabled, true);
@@ -1658,7 +1682,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {!isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={adapterType === "paperclip_runner" ? eff("adapterConfig", "provider", config.provider) === "codex" ? "codex_local" : eff("adapterConfig", "provider", config.provider) === "opencode" ? "opencode_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "claude" ? "claude_local" : adapterType : adapterType}
-            value={aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
+            value={effectiveAiConnection}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}
 

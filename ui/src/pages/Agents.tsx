@@ -27,8 +27,10 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, Plus, List, Network } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { AlertTriangle, Bot, Plus, List, Network, Wrench } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
+import { companySkillsApi } from "../api/companySkills";
 import {
   isStarred,
   resourceMembershipState,
@@ -111,6 +113,22 @@ function getConfiguredModel(agent: Agent): string | null {
   if (typeof value !== "string") return null;
   const model = value.trim();
   return model.length > 0 ? model : null;
+}
+
+export function getAgentSkillNames(
+  agent?: Agent | null,
+  namesByKey?: Map<string, string>,
+): string[] {
+  if (!agent) return [];
+  const sync = (agent.adapterConfig as Record<string, unknown> | undefined)
+    ?.paperclipSkillSync as { desiredSkills?: string[] } | undefined;
+  const rawSkills: string[] = Array.isArray(sync?.desiredSkills)
+    ? sync.desiredSkills
+    : Array.isArray((agent as unknown as { desiredSkills?: string[] }).desiredSkills)
+    ? (agent as unknown as { desiredSkills?: string[] }).desiredSkills!
+    : [];
+
+  return rawSkills.map((key) => namesByKey?.get(key) ?? key.split("/").pop() ?? key);
 }
 
 function formatEnvironmentDriver(driver: Environment["driver"]): string {
@@ -266,6 +284,20 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     enabled: !!selectedCompanyId && environmentsEnabled,
   });
 
+  const { data: companySkills } = useQuery({
+    queryKey: queryKeys.companySkills.list(selectedCompanyId!),
+    queryFn: () => companySkillsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const skillNamesByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const skill of companySkills ?? []) {
+      map.set(skill.key, skill.name);
+    }
+    return map;
+  }, [companySkills]);
+
   const runsQueryKey = [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"] as const;
   const sharedRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
@@ -361,6 +393,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
     const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
+    const skills = getAgentSkillNames(agent, skillNamesByKey);
     // Keep lifecycle controls with the metadata only when the content area
     // has enough room; the sidebar can leave less space than the viewport suggests.
     const builtInCluster = builtInState && showBuiltInLifecycle ? (
@@ -388,7 +421,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       <EntityRow
         key={agent.id}
         title={agent.name}
-        titleClassName="flex-1 @5xl:flex-none @5xl:w-56"
+        titleClassName="flex-1 @3xl:flex-none @3xl:w-56 @5xl:w-56"
         titleTextClassName="truncate"
         subtitleClassName="truncate"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
@@ -404,27 +437,28 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           <AgentAvatar agent={agent} size={32} />
         )}
         secondaryRow={builtInCluster && (
-          <div className="@5xl:hidden flex flex-wrap items-center gap-1.5">
+          <div className="@3xl:hidden flex flex-wrap items-center gap-1.5">
             {builtInCluster}
           </div>
         )}
         meta={
           <div className="flex items-center gap-3">
             {builtInCluster && (
-              <div className="hidden @5xl:flex items-center gap-1.5">
+              <div className="hidden @3xl:flex items-center gap-1.5">
                 {builtInCluster}
               </div>
             )}
-            <div className="hidden @5xl:flex items-center gap-3">
+            <div className="hidden @3xl:flex items-center gap-3">
               <AgentMetaColumns
                 agent={agent}
                 environment={resolveRenderedEnvironment(agent.id)}
                 showEnvironment={showEnvironmentColumn}
+                skills={skills}
               />
             </div>
           </div>
         }
-        metaSpacerClassName="hidden @5xl:block"
+        metaSpacerClassName="hidden @3xl:block @5xl:block"
         trailing={
           <div className="flex items-center gap-3">
             {agentChat.enabled && <Button variant="ghost" size="sm" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(`/chats/${agentRouteRef(agent)}`); }}>Chat</Button>}
@@ -775,16 +809,20 @@ function AgentMetaColumns({
   agent,
   environment,
   showEnvironment,
+  skills = [],
 }: {
   agent: Agent;
   environment: EnvironmentDescriptor;
   showEnvironment: boolean;
+  skills?: string[];
 }) {
   const model = getConfiguredModel(agent);
   const adapterLabel = getAdapterLabel(agent.adapterType);
+  const specializedSkills = skills.filter((s) => s !== "paperclip");
+
   return (
     <>
-      <div className="w-44 min-w-0 leading-tight">
+      <div className="w-40 min-w-0 leading-tight">
         <div
           className="truncate font-mono text-xs text-muted-foreground"
           title={model ?? undefined}
@@ -796,7 +834,7 @@ function AgentMetaColumns({
         </div>
       </div>
       {showEnvironment && (
-        <div className="w-44 min-w-0 leading-tight">
+        <div className="w-40 min-w-0 leading-tight">
           <div className="truncate text-xs text-muted-foreground" title={environment.title}>
             {environment.label}
           </div>
@@ -805,6 +843,36 @@ function AgentMetaColumns({
           </div>
         </div>
       )}
+      <div
+        className="w-72 min-w-0 leading-tight hidden @3xl:block"
+        title={
+          specializedSkills.length > 0
+            ? `Specialized skills (${specializedSkills.length}): ${specializedSkills.join(", ")}`
+            : "No specialized skills"
+        }
+      >
+        {specializedSkills.length > 0 ? (
+          <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
+              {specializedSkills.slice(0, 2).map((skill) => (
+                <span
+                  key={skill}
+                  className="inline-block truncate max-w-[120px] rounded bg-muted/70 border border-border/50 px-1.5 py-0.5 text-(length:--text-micro) font-mono text-muted-foreground"
+                >
+                  {skill}
+                </span>
+              ))}
+            </div>
+            {specializedSkills.length > 2 && (
+              <span className="shrink-0 text-(length:--text-micro) font-mono text-muted-foreground/70">
+                +{specializedSkills.length - 2}
+              </span>
+            )}
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground/40 font-mono">—</span>
+        )}
+      </div>
       <span className="w-24 whitespace-nowrap text-right text-xs text-muted-foreground">
         {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
       </span>

@@ -767,6 +767,40 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.querySelector('input[aria-label="Variable name"]')).toBeNull();
   });
 
+  it("loads and refreshes models for the configured agent", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "gateway-model", label: "Gateway model" }]);
+
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: { model: "gateway-model" },
+    });
+    roots.push(result.root);
+
+    await flushUntil(() => mockAgentsApi.adapterModels.mock.calls.length > 0);
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "codex_local", {
+      environmentId: null,
+      provider: undefined,
+      agentId: "agent-1",
+    });
+
+    const modelButton = findButton(result.container, "gateway-model");
+    expect(modelButton).toBeTruthy();
+    await clickElement(modelButton);
+    const refreshButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Refresh models",
+    );
+    expect(refreshButton).toBeTruthy();
+    await clickElement(refreshButton);
+
+    expect(mockAgentsApi.adapterModels).toHaveBeenLastCalledWith("company-1", "codex_local", {
+      refresh: true,
+      environmentId: null,
+      provider: undefined,
+      agentId: "agent-1",
+    });
+  });
+
   it("reads and saves Pi thinking effort using the Pi runtime key", async () => {
     const result = await renderForm([], { adapterType: "pi_local", adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.6", thinking: "high" } });
     roots.push(result.root);

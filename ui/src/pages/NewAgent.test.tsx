@@ -424,6 +424,37 @@ describe("New agent setup", () => {
       });
     },
   );
+  it("connects an OpenAI-compatible gateway before testing and hiring Codex", async () => {
+    api.testEnvironment.mockResolvedValue({
+      ...pass,
+      adapterType: "codex_local",
+      checks: [{ code: "ai_connection_api_key_reverified", level: "info", message: "Gateway key verified" }],
+    });
+    await render("codex_local");
+    await click("Use an OpenAI-compatible gateway");
+    const baseUrl = container.querySelector('input[placeholder="https://gateway.example.com/v1"]') as HTMLInputElement;
+    expect(baseUrl).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(baseUrl, "https://gateway.example.com/v1");
+      baseUrl.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await fill("API key", "gateway-test-key");
+    await click("Connect");
+    const binding = { provider: "openai_compatible", method: "api_key", mode: "responsible_user" };
+    expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      provider: "openai_compatible", method: "api_key", apiKey: "gateway-test-key",
+      baseUrl: "https://gateway.example.com/v1", wireApi: "responses",
+    }));
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({
+      aiConnection: binding,
+      testCredentials: {},
+    });
+    expect(container.textContent).toContain("Configure your agent");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual(binding);
+    expect(JSON.stringify(api.testEnvironment.mock.calls)).not.toContain("gateway-test-key");
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("gateway-test-key");
+  });
   it.each([
     ["claude_local", "claude", "Claude", "ANTHROPIC_API_KEY"],
     ["codex_local", "codex", "OpenAI", "OPENAI_API_KEY"],

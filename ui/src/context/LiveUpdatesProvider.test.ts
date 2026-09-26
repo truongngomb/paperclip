@@ -78,6 +78,16 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       expect(invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["ai-connections"] });
     },
   );
+  it("refreshes AI account previews after a managed account is archived", () => {
+    const invalidateQueries = vi.fn();
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      { invalidateQueries, getQueryData: () => undefined } as never,
+      "company-1", { entityType: "tool_connection", entityId: "connection-1", action: "tool_connection.archived" },
+      { userId: "owner", agentId: null },
+    );
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["ai-connections", "company-1"] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.tools.connections("company-1") });
+  });
 
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
