@@ -2,7 +2,7 @@ import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import type { ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Archive, Flag } from "lucide-react";
+import { Archive, EyeOff, Flag } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -306,6 +306,12 @@ export function IssueRow({
             >
               {issue.title}{titleSuffix}
             </span>
+            {issue.hiddenAt && (
+              <Badge variant="outline" className="shrink-0 gap-1 border-muted-foreground/30 bg-muted/60 text-muted-foreground">
+                <EyeOff className="h-3 w-3" />
+                Hidden
+              </Badge>
+            )}
             {recoveryIndicator}
             {mobileTitleMeta ? (
               <span className="ml-auto shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground sm:hidden">

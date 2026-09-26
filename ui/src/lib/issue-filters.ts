@@ -37,6 +37,7 @@ export type IssueFilterState = {
    */
   externalObjectStatuses: string[];
   hideRoutineExecutions: boolean;
+  includeHidden?: boolean;
 };
 
 export const defaultIssueFilterState: IssueFilterState = {
@@ -50,6 +51,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   liveOnly: false,
   externalObjectStatuses: [],
   hideRoutineExecutions: false,
+  includeHidden: false,
 };
 
 export const externalObjectFilterOrder = [
@@ -116,6 +118,7 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     liveOnly: candidate.liveOnly === true,
     externalObjectStatuses: normalizeIssueFilterValueArray(candidate.externalObjectStatuses),
     hideRoutineExecutions: candidate.hideRoutineExecutions === true,
+    includeHidden: candidate.includeHidden === true,
   };
 }
 
@@ -221,6 +224,9 @@ export function applyIssueFilters(
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) {
     result = result.filter((issue) => issue.originKind !== "routine_execution");
   }
+  if (!state.includeHidden) {
+    result = result.filter((issue) => !issue.hiddenAt);
+  }
   if (state.statuses.length > 0) result = result.filter((issue) => state.statuses.includes(issue.status));
   if (state.priorities.length > 0) result = result.filter((issue) => state.priorities.includes(issue.priority));
   if (state.assignees.length > 0) {
@@ -281,6 +287,7 @@ export function countActiveIssueFilters(
   if (state.workspaces.length > 0) count += 1;
   if (state.liveOnly) count += 1;
   if (state.externalObjectStatuses.length > 0) count += 1;
+  if (state.includeHidden) count += 1;
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
   return count;
 }

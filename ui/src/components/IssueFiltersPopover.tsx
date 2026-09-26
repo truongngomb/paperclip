@@ -553,6 +553,13 @@ export function IssueFiltersPopover({
                   />
                   <span className="text-sm">Live runs only</span>
                 </label>
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
+                    checked={state.includeHidden ?? false}
+                    onCheckedChange={(checked) => onChange({ includeHidden: checked === true })}
+                  />
+                  <span className="text-sm">Include hidden tasks</span>
+                </label>
                 {enableRoutineVisibilityFilter ? (
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                     <Checkbox

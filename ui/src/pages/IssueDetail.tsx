@@ -315,8 +315,10 @@ import {
   Check,
   ChevronRight,
   Copy,
+  Eye,
   EyeOff,
   ScanEye,
+  Trash2,
   Flag,
   FileCode2,
   ListTree,
@@ -329,6 +331,16 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   deriveOriginatingActor,
   isClosedIsolatedExecutionWorkspace,
@@ -2890,6 +2902,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const { pushToast } = useToastActions();
   const { isMobile } = useSidebar();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [artifactsOpenRequest, setArtifactsOpenRequest] = useState<{
@@ -4063,6 +4076,25 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           queryKey: queryKeys.issues.list(selectedCompanyId),
         });
       }
+    },
+  });
+  const deleteIssue = useMutation({
+    mutationFn: () => issuesApi.remove(issue!.id),
+    onSuccess: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.list(selectedCompanyId),
+        });
+      }
+      queryClient.removeQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      pushToast({ title: "Task has been permanently deleted", tone: "success" });
+      navigate("/issues/all");
+    },
+    onError: (err) => {
+      pushToast({
+        title: err instanceof Error ? err.message : "Failed to delete task",
+        tone: "error",
+      });
     },
   });
   const resolveRecoveryAction = useMutation({
@@ -7234,19 +7266,47 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     setMoreOpen(false);
                   }}
                 />
-                <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                  onClick={() => {
-                    updateIssue.mutate(
-                      { hiddenAt: new Date().toISOString() },
-                      { onSuccess: () => navigate("/issues/all") },
-                    );
-                    setMoreOpen(false);
-                  }}
-                >
-                  <EyeOff className="h-3 w-3" />
-                  Hide this task
-                </button>
+                {issue.hiddenAt ? (
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                    onClick={() => {
+                      updateIssue.mutate(
+                        { hiddenAt: null },
+                        { onSuccess: () => pushToast({ title: "Task is now visible", tone: "success" }) },
+                      );
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <Eye className="h-3 w-3" />
+                    Unhide task
+                  </button>
+                ) : (
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                    onClick={() => {
+                      updateIssue.mutate(
+                        { hiddenAt: new Date().toISOString() },
+                        { onSuccess: () => navigate("/issues/all") },
+                      );
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <EyeOff className="h-3 w-3" />
+                    Hide this task
+                  </button>
+                )}
+                {(issue.hiddenAt || ["done", "cancelled"].includes(issue.status)) && (
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      setDeleteDialogOpen(true);
+                    }}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Delete task permanently
+                  </button>
+                )}
               </PopoverContent>
             </Popover>
           </div>
@@ -7394,13 +7454,39 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           {issue.hiddenAt && (
             <div
               className={cn(
-                "flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive",
+                "flex items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive",
                 shellSectionClass,
                 taskChatShellEnabled && (isMobile ? "mt-4" : "mt-3"),
               )}
             >
-              <EyeOff className="h-4 w-4 shrink-0" />
-              This task is hidden
+              <div className="flex items-center gap-2">
+                <EyeOff className="h-4 w-4 shrink-0" />
+                <span>This task is hidden</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="border-destructive/30 text-destructive hover:bg-destructive/10"
+                  onClick={() => updateIssue.mutate(
+                    { hiddenAt: null },
+                    { onSuccess: () => pushToast({ title: "Task is now visible", tone: "success" }) },
+                  )}
+                  disabled={updateIssue.isPending}
+                >
+                  <Eye className="h-3.5 w-3.5 mr-1" />
+                  Unhide
+                </Button>
+                <Button
+                  size="xs"
+                  variant="destructive"
+                  onClick={() => setDeleteDialogOpen(true)}
+                  disabled={deleteIssue.isPending}
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-1" />
+                  Delete
+                </Button>
+              </div>
             </div>
           )}
           {treeControlWakeWarning ? (
@@ -8196,6 +8282,34 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               )}
             </SheetContent>
           </Sheet>
+          <AlertDialog
+            open={deleteDialogOpen}
+            onOpenChange={(open) => {
+              if (!open && !deleteIssue.isPending) setDeleteDialogOpen(false);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete task permanently?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Are you sure you want to permanently delete &ldquo;{issue.title}&rdquo;? This action cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={deleteIssue.isPending}>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  disabled={deleteIssue.isPending}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    deleteIssue.mutate();
+                  }}
+                >
+                  {deleteIssue.isPending ? "Deleting..." : "Delete task"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           {fileViewerEnabled ? (
             <IssueFileViewer
               issueId={issue.id}
