@@ -8,12 +8,14 @@ import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
+import { reapStaleEmbeddedPostgresProcesses } from "./embedded-postgres-stale-reaper.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -520,6 +522,17 @@ async function startServerWithDatabaseTeardown(
       }
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
     } else {
+      const reapResult = await reapStaleEmbeddedPostgresProcesses({ dataDir, port: configuredPort, log: logger });
+      if (reapResult.reaped.length > 0) {
+        logger.warn(
+          `Reaped ${reapResult.reaped.length} stale embedded PostgreSQL process(es) before starting the cluster: ` +
+            reapResult.reaped.map((entry) => `pid=${entry.pid} (${entry.reason})`).join(", "),
+        );
+      }
+      if (existsSync(postmasterPidFile)) {
+        logger.warn("Removing stale embedded PostgreSQL lock file");
+        rmSync(postmasterPidFile, { force: true });
+      }
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
       try {
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
@@ -580,15 +593,35 @@ async function startServerWithDatabaseTeardown(
           });
         }
         embeddedPostgresStartedByThisProcess = true;
+        const cleanupPostgresOnProcessExit = () => {
+          const childPid = embeddedPostgres?.process?.pid;
+          if (typeof childPid === "number" && childPid > 0) {
+            try {
+              if (process.platform === "win32") {
+                spawnSync("taskkill", ["/PID", String(childPid), "/T", "/F"], { windowsHide: true, timeout: 5000 });
+              } else {
+                process.kill(childPid, "SIGKILL");
+              }
+            } catch {}
+          }
+        };
+        process.once("exit", cleanupPostgresOnProcessExit);
         embeddedPostgresSupervisor = createEmbeddedPostgresSupervisor({
           initialInstance: embeddedPostgres,
           createInstance: createEmbeddedPostgres,
-          beforeRestart: () => {
+          beforeRestart: async () => {
             const runningPostgresPid = getRunningPid();
             if (runningPostgresPid) {
               throw new Error(`Refusing embedded PostgreSQL recovery because the data directory reports a live process (pid=${runningPostgresPid})`);
             }
             if (existsSync(postmasterPidFile)) rmSync(postmasterPidFile, { force: true });
+            const reapResult = await reapStaleEmbeddedPostgresProcesses({ dataDir, port: configuredPort, log: logger });
+            if (reapResult.reaped.length > 0) {
+              logger.warn(
+                `Reaped ${reapResult.reaped.length} stale embedded PostgreSQL process(es) before recovery restart: ` +
+                  reapResult.reaped.map((entry) => `pid=${entry.pid} (${entry.reason})`).join(", "),
+              );
+            }
           },
           onUnexpectedExit: (code, signal) => logger.error(
             { code, signal, recentLogs: logBuffer.getRecentLogs() },
@@ -1977,7 +2010,19 @@ async function startServerWithDatabaseTeardown(
     const appShutdown = (app as { locals?: { paperclipShutdown?: () => Promise<void> } }).locals
       ?.paperclipShutdown;
     const stopEmbeddedPostgres = embeddedPostgres && embeddedPostgresStartedByThisProcess
-      ? () => embeddedPostgresSupervisor?.shutdown() ?? embeddedPostgres!.stop()
+      ? async () => {
+          try {
+            await (embeddedPostgresSupervisor?.shutdown() ?? embeddedPostgres!.stop());
+          } finally {
+            if (process.platform === "win32") {
+              await reapStaleEmbeddedPostgresProcesses({
+                dataDir: resolve(config.embeddedPostgresDataDir),
+                port: resolvedEmbeddedPostgresPort ?? config.embeddedPostgresPort,
+                log: logger,
+              });
+            }
+          }
+        }
       : null;
 
     // Await the ordered application teardown before the process exits. A live
