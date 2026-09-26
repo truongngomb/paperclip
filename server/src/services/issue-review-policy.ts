@@ -1,5 +1,5 @@
-import { and, desc, eq, sql } from "drizzle-orm";
-import { activityLog, type Db } from "@paperclipai/db";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { activityLog, agents, type Db } from "@paperclipai/db";
 import type { IssueReviewPolicy } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 
@@ -18,6 +18,57 @@ interface ReviewPolicyIssue {
   reviewPolicy?: IssueReviewPolicy | null;
   createdByAgentId?: string | null;
   createdByUserId?: string | null;
+}
+
+/**
+ * True when the company has at least one active agent besides
+ * `excludeAgentId`. Multi-agent companies get four-eyes review by default:
+ * an implementation author is never the sole verifier of their own
+ * deliverable. Single-agent companies keep claim-based completion — there
+ * is no second writer to verify.
+ */
+export async function companyHasOtherActiveAgents(
+  db: Db,
+  companyId: string,
+  excludeAgentId: string,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        isNull(agents.pausedAt),
+        ne(agents.id, excludeAgentId),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * Effective review policy for an issue: the explicitly stored policy when
+ * set, otherwise `not_creator` when an independent verifier plausibly exists
+ * (another active agent besides the issue's agent author, or any two active
+ * agents when the author is unknown/board-created) and `anyone` for
+ * single-agent companies.
+ */
+export async function resolveEffectiveIssueReviewPolicy(
+  db: Db,
+  issue: ReviewPolicyIssue,
+): Promise<IssueReviewPolicy> {
+  if (issue.reviewPolicy) return issue.reviewPolicy;
+  if (issue.createdByAgentId) {
+    return (await companyHasOtherActiveAgents(db, issue.companyId, issue.createdByAgentId))
+      ? "not_creator"
+      : "anyone";
+  }
+  const rows = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(and(eq(agents.companyId, issue.companyId), isNull(agents.pausedAt)))
+    .limit(2);
+  return rows.length >= 2 ? "not_creator" : "anyone";
 }
 
 export async function resolveIssueReviewRequester(
@@ -105,7 +156,17 @@ export async function assertIssueReviewVerdictActorAllowed(
     reviewPolicy?: IssueReviewPolicy | null;
   },
 ): Promise<void> {
-  const policy = input.reviewPolicy ?? input.issue.reviewPolicy ?? "anyone";
+  // An explicitly passed policy wins (route-level resolution), then the
+  // stored policy. Only when neither is set does the org-aware default
+  // apply: multi-agent companies require a verifier other than the review
+  // requester. The org default stays permissive when the requester cannot
+  // be attributed (no recorded review transition) — it adds a gate against
+  // known self-verification, it must not brick flows with no attribution.
+  const explicitPolicy = input.reviewPolicy ?? input.issue.reviewPolicy ?? null;
+  if (explicitPolicy === "anyone") return;
+  const policy =
+    explicitPolicy ?? (await resolveEffectiveIssueReviewPolicy(db, input.issue));
+  const orgDefaulted = explicitPolicy == null;
   if (policy === "anyone") return;
 
   if (policy === "human_only") {
@@ -123,6 +184,7 @@ export async function assertIssueReviewVerdictActorAllowed(
 
   const requester = await resolveIssueReviewRequester(db, input.issue);
   if (!requester) {
+    if (orgDefaulted) return;
     throw forbidden(
       "Review policy `not_creator` requires a different writer, but the review requester could not be determined.",
       {

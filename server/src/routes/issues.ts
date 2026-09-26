@@ -319,6 +319,7 @@ import { deliverAgentUnblockNotification } from "../services/routable-blocked.js
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
+  resolveEffectiveIssueReviewPolicy,
   resolveIssueReviewRequester,
 } from "../services/issue-review-policy.js";
 import {
@@ -5879,10 +5880,11 @@ export function issueRoutes(
     const requester = await resolveIssueReviewRequester(db, issue);
     const binding =
       requester?.reviewInteractionId === interaction.id ? "explicit" : "legacy";
-    if (issue.reviewPolicy == null || issue.reviewPolicy === "anyone") {
+    const effectivePolicy = await resolveEffectiveIssueReviewPolicy(db, issue);
+    if (effectivePolicy == null || effectivePolicy === "anyone") {
       return { restriction: "anyone", binding };
     }
-    if (issue.reviewPolicy === "human_only") {
+    if (effectivePolicy === "human_only") {
       return {
         restriction: { policy: "human_only", source: "issue_review" },
         binding,
@@ -5923,8 +5925,7 @@ export function issueRoutes(
       interaction.status !== "pending" ||
       (interaction.kind !== "request_confirmation" &&
         interaction.kind !== "request_checkbox_confirmation") ||
-      issue.reviewPolicy == null ||
-      issue.reviewPolicy === "anyone"
+      (await resolveEffectiveIssueReviewPolicy(db, issue)) === "anyone"
     )
       return;
     if (!(await isIssueReviewVerdictInteraction(db, { issue, interaction })))
@@ -8115,6 +8116,9 @@ export function issueRoutes(
         req.query.includeBlockedInboxAttention === "true" ||
         req.query.includeBlockedInboxAttention === "1",
       includeLiveDescendantSummary: includeLiveDescendantSummary === true,
+      includeHidden:
+        req.query.includeHidden === "true" ||
+        req.query.includeHidden === "1",
       hasPlanDocument,
       q: req.query.q as string | undefined,
       limit,
@@ -12796,6 +12800,26 @@ export function issueRoutes(
       const actor = getActorInfo(req);
       const isClosed = isClosedIssueStatus(existing.status);
       const isBlocked = existing.status === "blocked";
+      const executionStageParticipant = (() => {
+        const state = existing.executionState as Record<string, unknown> | null;
+        const participant = state?.currentParticipant;
+        return participant && typeof participant === "object"
+          ? (participant as Record<string, unknown>)
+          : null;
+      })();
+      const actorIsExecutionStageParticipant = (() => {
+        if (!executionStageParticipant) return false;
+        if (req.actor.type === "agent") {
+          return (
+            executionStageParticipant.agentId === actor.actorId &&
+            !executionStageParticipant.userId
+          );
+        }
+        return (
+          executionStageParticipant.userId === actor.actorId &&
+          !executionStageParticipant.agentId
+        );
+      })();
       const normalizedAssigneeAgentId =
         await normalizeIssueAssigneeAgentReference(
           existing.companyId,
@@ -12849,6 +12873,8 @@ export function issueRoutes(
       const reviewPolicyChangeRequested =
         req.body.reviewPolicy !== undefined &&
         req.body.reviewPolicy !== existing.reviewPolicy;
+      const reviewDoneVerdictRequested =
+        existing.status === "in_review" && updateFields.status === "done";
       const reviewVerdictRequested =
         existing.status === "in_review" &&
         (updateFields.status === "done" || updateFields.status === "cancelled");
@@ -12856,8 +12882,31 @@ export function issueRoutes(
         req.body.reviewPolicy !== undefined ||
         updateFields.status === "done" ||
         updateFields.status === "cancelled";
+      const effectiveReviewPolicy =
+        updateFields.status === "done"
+          ? await resolveEffectiveIssueReviewPolicy(db, existing)
+          : "anyone";
+      if (reviewVerdictRequested &&
+        existing.reviewPolicy != null &&
+        existing.reviewPolicy !== "anyone") {
+        await assertIssueReviewVerdictActorAllowed(db, {
+          issue: existing,
+          actor: { type: actor.actorType, id: actor.actorId },
+          reviewPolicy: existing.reviewPolicy,
+        });
+      }
+      if (reviewDoneVerdictRequested && existing.reviewPolicy == null && !actorIsExecutionStageParticipant) {
+        // Org default (multi-agent four-eyes): resolved inside the assert,
+        // permissive when the review requester cannot be attributed. A typed
+        // execution-policy stage participant is already an authorized
+        // verifier, so the org default never overrides the stage pipeline.
+        await assertIssueReviewVerdictActorAllowed(db, {
+          issue: existing,
+          actor: { type: actor.actorType, id: actor.actorId },
+        });
+      }
       if (
-        (reviewVerdictRequested || reviewPolicyChangeRequested) &&
+        reviewPolicyChangeRequested &&
         existing.reviewPolicy != null &&
         existing.reviewPolicy !== "anyone"
       ) {
@@ -12866,6 +12915,33 @@ export function issueRoutes(
           actor: { type: actor.actorType, id: actor.actorId },
           reviewPolicy: existing.reviewPolicy,
         });
+      }
+      // Four-eyes by default in multi-agent companies: an agent cannot be
+      // the sole verifier of its own deliverable. Direct todo/in_progress/
+      // blocked → done closures must pass through an in_review phase that a
+      // different writer (peer, QA report, or the board) requested or will
+      // verdict. Board users are never restricted; single-agent companies
+      // keep claim-based completion; explicit reviewPolicy 'anyone' opts out.
+      if (
+        req.actor.type === "agent" &&
+        updateFields.status === "done" &&
+        existing.status !== "in_review" &&
+        !isClosed &&
+        !existing.conversationAgentId &&
+        existing.workMode !== "skill_test" &&
+        !actorIsExecutionStageParticipant &&
+        effectiveReviewPolicy === "not_creator"
+      ) {
+        throw forbidden(
+          "Multi-agent companies require independent verification: an agent cannot be the sole verifier of its own deliverable. Move this issue to `in_review` with a valid review path (assign a human reviewer via `assigneeUserId` + clear agent assignee, create a `request_confirmation`/`ask_user_questions` interaction, link a pending approval, set an `executionState.currentParticipant`, or schedule an issue monitor), then let that reviewer or a board user close it — or set reviewPolicy to `anyone` to opt this issue out.",
+          {
+            code: "independent_verification_required",
+            policy: "not_creator",
+            policySource: "org_default_multi_agent",
+            remediation:
+              "PATCH the issue to `in_review` with a valid review path (assigneeUserId, thread interaction, pending approval, typed executionState, or issue monitor), then let the reviewer or a board user close it.",
+          },
+        );
       }
       const shouldCancelActiveRunForCancelledStatus =
         existing.status !== "cancelled" && updateFields.status === "cancelled";
@@ -14964,6 +15040,9 @@ export function issueRoutes(
     );
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!existing.hiddenAt && !["done", "cancelled"].includes(existing.status)) {
+      throw conflict("Only hidden, done, or cancelled tasks can be permanently deleted");
+    }
     const attachments = await svc.listAttachments(id);
 
     const issue = await svc.remove(id);
@@ -14985,7 +15064,7 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     await logActivity(db, {
-      companyId: issue.companyId,
+      companyId: existing.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
@@ -14993,9 +15072,8 @@ export function issueRoutes(
       agentApiKeyId: actor.agentApiKeyId,
       action: "issue.deleted",
       entityType: "issue",
-      entityId: issue.id,
+      entityId: id,
     });
-
     await queueTaskWatchdogEvaluation(existing, actor.runId);
     res.json(issue);
   });

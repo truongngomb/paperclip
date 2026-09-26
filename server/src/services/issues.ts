@@ -2,6 +2,7 @@ import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackCo
 import { documentService } from "./documents.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
+import { purgeIssueAttentionAndDecisionData, purgeIssueRunData } from "./issue-run-purge.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
@@ -1810,6 +1811,7 @@ export interface IssueFilters {
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
+  includeHidden?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   includeLiveDescendantSummary?: boolean;
@@ -7832,7 +7834,7 @@ export function issueService(db: Db) {
 
       const conditions = [
         eq(issues.companyId, companyId),
-        visibleIssueCondition(),
+        filters?.includeHidden ? isNull(issues.harnessKind) : visibleIssueCondition(),
       ];
       if (!filters?.q?.trim()) {
         conditions.push(isNull(issues.conversationAgentId));
@@ -8167,7 +8169,10 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      const conditions = [
+        eq(issues.companyId, companyId),
+        filters?.includeHidden ? isNull(issues.harnessKind) : visibleIssueCondition(),
+      ];
       if (!filters?.q?.trim()) {
         conditions.push(isNull(issues.conversationAgentId));
         if (!filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
@@ -11246,6 +11251,30 @@ export function issueService(db: Db) {
           .select({ documentId: issueDocuments.documentId })
           .from(issueDocuments)
           .where(eq(issueDocuments.issueId, id));
+        const commentIds = (
+          await tx
+            .select({ id: issueComments.id })
+            .from(issueComments)
+            .where(eq(issueComments.issueId, id))
+        ).map((row) => row.id);
+
+        const issueTarget = await tx
+          .select({ companyId: issues.companyId })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (issueTarget) {
+          await purgeIssueAttentionAndDecisionData(
+            tx as unknown as Db,
+            issueTarget.companyId,
+            [id],
+          );
+        }
+
+        await tx
+          .update(issues)
+          .set({ parentId: null })
+          .where(eq(issues.parentId, id));
 
         let removedIssue;
         try {
@@ -11286,6 +11315,42 @@ export function issueService(db: Db) {
         }
 
         if (!removedIssue) return null;
+        await purgeIssueRunData(tx as unknown as Db, removedIssue.companyId, [
+          removedIssue.id,
+        ]);
+        // Issue, comment and document rows cascade away with the issue, but
+        // their activity entries are keyed by id strings and must go too.
+        const activityConditions = [
+          and(
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, removedIssue.id),
+          ),
+          ...(commentIds.length > 0
+            ? [
+                and(
+                  eq(activityLog.entityType, "issue_comment"),
+                  inArray(activityLog.entityId, commentIds),
+                ),
+              ]
+            : []),
+          ...(issueDocumentIds.length > 0
+            ? [
+                and(
+                  eq(activityLog.entityType, "issue_document"),
+                  inArray(
+                    activityLog.entityId,
+                    issueDocumentIds.map((row) => row.documentId),
+                  ),
+                ),
+              ]
+            : []),
+        ];
+        await tx.delete(activityLog).where(
+          and(
+            eq(activityLog.companyId, removedIssue.companyId),
+            or(...activityConditions),
+          ),
+        );
         const [enriched] = await withIssueLabels(tx, [removedIssue]);
         return enriched;
       }),
