@@ -5,24 +5,27 @@ import { aiConnectionsApi } from "@/api/ai-connections";
 import { toolsApi } from "@/api/tools";
 import { useNavigate } from "@/lib/router";
 import { AiConnectionAccountControls } from "./AiConnectionAccountControls";
-import type { ToolConnection } from "@paperclipai/shared";
-import { aiMethodLabel } from "./model";
+import { aiProviderAppSlug, type AiProvider, type ToolConnection } from "@paperclipai/shared";
+import { aiGatewayHost, aiMethodLabel } from "./model";
 
 export function ManagedAiConnectionRow({
   connection,
 }: {
   connection: ToolConnection;
 }) {
-  const metadata = connection.config?.ai as
+  const config = connection.config as
     | {
-        provider: "anthropic" | "openai" | "openrouter" | "xai";
-        method: "subscription" | "api_key";
+        ai?: { provider: AiProvider; method: "subscription" | "api_key" };
+        aiGateway?: { baseUrl: string; wireApi: "chat" | "responses" };
       }
     | undefined;
+  const metadata = config?.ai;
   if (!metadata) return null;
+  const gateway = config?.aiGateway;
   return (
     <p className="text-xs text-muted-foreground">
-      {aiMethodLabel(metadata.provider, metadata.method)} ·{" "}
+      {aiMethodLabel(metadata.provider, metadata.method)}
+      {gateway ? ` · ${aiGatewayHost(gateway.baseUrl)}` : ""} ·{" "}
       {connection.credentialPolicy === "per_user"
         ? "Personal"
         : "Company shared"}
@@ -124,7 +127,7 @@ export function ManagedAiConnectionDetails({
         }
         onReconnect={() =>
           navigate(
-            `/apps/connect?source=${account.provider}&reconnect=${connection.id}&method=ai-${account.method}`,
+            `/apps/connect?source=${aiProviderAppSlug(account.provider)}&reconnect=${connection.id}&method=ai-${account.method}`,
           )
         }
       />

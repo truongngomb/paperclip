@@ -1,10 +1,20 @@
 import { AgentAvatar } from "@/components/AgentAvatar";
-import { useEffect, useMemo, useState } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { Download, ScrollText, ShieldAlert } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Download, ScrollText, ShieldAlert, Trash2 } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -86,7 +96,17 @@ export interface AuditFeedProps {
   /** Optional controlled action prefix, used by links from connection testing. */
   actionDomain?: string;
   onActionDomainChange?: (actionDomain: string) => void;
+  onActionsChange?: (actions: AuditFeedActions | null) => void;
 }
+
+export type AuditFeedActions = {
+  canExport: boolean;
+  canErase: boolean;
+  exporting: boolean;
+  erasing: boolean;
+  exportCsv: () => void;
+  eraseAuditLogs: () => void;
+};
 
 function toStartIso(value: string): string | undefined {
   if (!value) return undefined;
@@ -289,8 +309,11 @@ export function AuditFeed({
   onModeChange,
   actionDomain: controlledActionDomain,
   onActionDomainChange,
+  onActionsChange,
 }: AuditFeedProps) {
   const { pushToast } = useToastActions();
+  const queryClient = useQueryClient();
+  const [clearAuditOpen, setClearAuditOpen] = useState(false);
   const [agent, setAgent] = useState<string>(ALL);
   const [responsibleUser, setResponsibleUser] = useState<string>(ALL);
   const [localActionDomain, setLocalActionDomain] = useState<string>(ALL);
@@ -456,7 +479,29 @@ export function AuditFeed({
     setDateTo("");
   };
 
-  const handleExport = async () => {
+  const clearAudit = useMutation({
+    mutationFn: () => auditApi.clearCompanyAuditLogs(companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["audit", companyId] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
+      queryClient.invalidateQueries({ queryKey: ["tools", companyId, "activity"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.workTimeline(companyId) });
+      setClearAuditOpen(false);
+      pushToast({
+        title: "Audit logs erased",
+        body: "Activity and tool/secret audit events were permanently deleted.",
+        tone: "success",
+      });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't erase audit logs",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
+
+  const handleExport = useCallback(async () => {
     setExporting(true);
     try {
       const blob = await auditApi.exportAgentActionsCsv(companyId, {
@@ -490,7 +535,32 @@ export function AuditFeed({
     } finally {
       setExporting(false);
     }
-  };
+  }, [
+    companyId,
+    filters.action,
+    filters.actorScope,
+    filters.agentId,
+    filters.entityId,
+    filters.entityType,
+    filters.from,
+    filters.responsibleUserId,
+    filters.runId,
+    filters.to,
+    pushToast,
+    resolvedMode,
+  ]);
+
+  useEffect(() => {
+    onActionsChange?.({
+      canExport: canUseAdvancedControls,
+      canErase: !hasLockedScope && canUseAdvancedControls,
+      exporting,
+      erasing: clearAudit.isPending,
+      exportCsv: () => { void handleExport(); },
+      eraseAuditLogs: () => setClearAuditOpen(true),
+    });
+    return () => onActionsChange?.(null);
+  }, [canUseAdvancedControls, clearAudit.isPending, exporting, handleExport, hasLockedScope, onActionsChange]);
 
   if (permissionDenied && !recoveringFromAccessDowngrade && !fallingBackToAllActivity) {
     return <AuditUpsell />;
@@ -633,18 +703,6 @@ export function AuditFeed({
             Clear filters
           </Button>
         ) : null}
-        {canUseAdvancedControls ? (
-          <Button
-            variant="outline"
-            size="sm"
-            className="ml-auto"
-            onClick={handleExport}
-            disabled={exporting || feed.isLoading || items.length === 0}
-          >
-            <Download className="mr-1.5 h-4 w-4" />
-            {exporting ? "Exporting…" : "Export CSV"}
-          </Button>
-        ) : null}
       </div>
 
       {recoveringFromAccessDowngrade || fallingBackToAllActivity ? (
@@ -722,6 +780,41 @@ export function AuditFeed({
       <p className="text-xs text-muted-foreground">
         Recorded by Paperclip — entries can't be edited. Sensitive values are never stored.
       </p>
+
+      <AlertDialog
+        open={clearAuditOpen}
+        onOpenChange={(open) => {
+          if (!clearAudit.isPending) setClearAuditOpen(open);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Erase all audit logs?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes this organization&apos;s Activity, Apps and Tools audit events, and Secret access events. It cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Runs, tasks, projects, agents, costs, finance records, and budget controls are kept. Historical activity can no longer be used as fallback evidence for timeline, routine, and cost attribution.
+          </p>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={clearAudit.isPending}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={clearAudit.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                clearAudit.mutate();
+              }}
+            >
+              <Trash2 />
+              {clearAudit.isPending ? "Erasing…" : "Erase audit logs"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

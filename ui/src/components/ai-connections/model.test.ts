@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   aiConnectionProblem,
+  aiDefaultMethod,
+  aiGatewayHost,
   bindingProblem,
   matchesAiRequirement,
   personalAiDefault,
@@ -148,5 +150,51 @@ describe("AI connection selection presentation", () => {
         unavailableReason: "Not in the shared audience",
       }),
     ).toBe("Not in the shared audience");
+  });
+  it("derives each connector's default sign-in method from its catalog entry", () => {
+    expect(aiDefaultMethod("anthropic")).toBe("subscription");
+    expect(aiDefaultMethod("openai")).toBe("subscription");
+    expect(aiDefaultMethod("openai_compatible")).toBe("api_key");
+    expect(aiDefaultMethod("openrouter")).toBe("api_key");
+  });
+  it("keeps OpenAI-compatible connections in their own connector lane", () => {
+    const gateway = {
+      ...account,
+      id: "gateway",
+      grantId: "gateway-grant",
+      provider: "openai_compatible" as const,
+      method: "api_key" as const,
+      baseUrl: "https://gateway.example.com/v1",
+    };
+    const openaiRequirement: AiConnectionRequirement = {
+      companyId: "company",
+      provider: "openai",
+    };
+    expect(matchesAiRequirement(gateway, openaiRequirement)).toBe(false);
+    expect(
+      matchesAiRequirement(gateway, {
+        ...openaiRequirement,
+        provider: "openai_compatible",
+      }),
+    ).toBe(true);
+    expect(
+      bindingProblem(
+        {
+          provider: "openai_compatible",
+          method: "api_key",
+          mode: "responsible_user",
+        },
+        openaiRequirement,
+        [gateway],
+        "alice",
+        "agent",
+      ),
+    ).toContain("compatible");
+  });
+  it("labels gateway accounts by endpoint host", () => {
+    expect(aiGatewayHost("https://gateway.example.com/v1")).toBe(
+      "gateway.example.com",
+    );
+    expect(aiGatewayHost("not-a-url")).toBe("not-a-url");
   });
 });

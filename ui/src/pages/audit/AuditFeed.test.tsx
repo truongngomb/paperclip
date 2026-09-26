@@ -10,6 +10,7 @@ import { AuditFeed } from "./AuditFeed";
 
 const listAgentActionsMock = vi.hoisted(() => vi.fn());
 const exportCsvMock = vi.hoisted(() => vi.fn());
+const clearAuditMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const listUserDirectoryMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
@@ -17,6 +18,7 @@ const pushToastMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/audit", () => ({
   auditApi: {
     listAgentActions: (companyId: string, filters: unknown) => listAgentActionsMock(companyId, filters),
+    clearCompanyAuditLogs: (companyId: string) => clearAuditMock(companyId),
     exportAgentActionsCsv: (companyId: string, filters: unknown) => exportCsvMock(companyId, filters),
   },
 }));
@@ -115,6 +117,7 @@ describe("AuditFeed", () => {
       onModeChange?: (mode: "all" | "agents") => void;
       actionDomain?: string;
       onActionDomainChange?: (actionDomain: string) => void;
+      onActionsChange?: (actions: import("./AuditFeed").AuditFeedActions | null) => void;
     } = {},
   ) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -131,6 +134,7 @@ describe("AuditFeed", () => {
             onModeChange={props.onModeChange}
             actionDomain={props.actionDomain}
             onActionDomainChange={props.onActionDomainChange}
+            onActionsChange={props.onActionsChange}
           />
         </QueryClientProvider>,
       );
@@ -188,6 +192,17 @@ describe("AuditFeed", () => {
       tab!.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
     });
   }
+
+  it("offers erase only through the organization-level Audit actions callback", async () => {
+    let actions: import("./AuditFeed").AuditFeedActions | null = null;
+    await render({ onActionsChange: (next) => { actions = next; } });
+    expect(actions?.canExport).toBe(true);
+    expect(actions?.canErase).toBe(true);
+    expect(actions?.exporting).toBe(false);
+    expect(actions?.erasing).toBe(false);
+    expect(actions?.eraseAuditLogs).toEqual(expect.any(Function));
+    expect(container.textContent).not.toContain("Erase audit logs");
+  });
 
   it("renders the humanized sentence, the task link, the excerpt, and the on-behalf chip", async () => {
     await render();
@@ -249,12 +264,13 @@ describe("AuditFeed", () => {
 
   it("hides attribution filters and export for a basic all-actors reader", async () => {
     listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null, accessTier: "basic" });
-    await render();
+    let actions: import("./AuditFeed").AuditFeedActions | null = null;
+    await render({ onActionsChange: (next) => { actions = next; } });
 
     expect(container.textContent).toContain("commented on");
     expect(container.textContent).not.toContain("All agents");
     expect(container.textContent).not.toContain("All responsible users");
-    expect(container.textContent).not.toContain("Export CSV");
+    expect(actions?.canExport).toBe(false);
     expect(container.textContent).toContain("Action");
     expect(container.textContent).toContain("Entity");
     expect(container.textContent).toContain("From");
@@ -331,10 +347,11 @@ describe("AuditFeed", () => {
       }
       return Promise.resolve({ items: [record()], nextCursor: "cursor-2", accessTier: "full" });
     });
-    await render();
+    let actions: import("./AuditFeed").AuditFeedActions | null = null;
+    await render({ onActionsChange: (next) => { actions = next; } });
 
     expect(container.textContent).toContain("on behalf of Dotta");
-    expect(container.textContent).toContain("Export CSV");
+    expect(actions?.canExport).toBe(true);
     permissionRevoked = true;
     await clickButton("Load more");
     // The basic second page and the recovery refetch settle across several async
@@ -355,7 +372,7 @@ describe("AuditFeed", () => {
     expect(container.textContent).not.toContain("on behalf of Dotta");
     expect(container.querySelector('a[href="/agents/agent-1/runs/run-1"]')).toBeFalsy();
     expect(container.textContent).not.toContain("All agents");
-    expect(container.textContent).not.toContain("Export CSV");
+    expect(actions?.canExport).toBe(false);
   });
 
   it("surfaces the retry UI when the access-downgrade recovery refetch fails", async () => {
@@ -449,9 +466,17 @@ describe("AuditFeed", () => {
 
   it("offers the agent-actions mode to a full-tier reader and requests the privileged scope", async () => {
     // Mirror the page: the mode lives above the feed, so toggling re-queries.
+    let actions: import("./AuditFeed").AuditFeedActions | null = null;
     function Harness() {
       const [mode, setMode] = useState<"all" | "agents">("all");
-      return <AuditFeed companyId="company-1" mode={mode} onModeChange={setMode} />;
+      return (
+        <AuditFeed
+          companyId="company-1"
+          mode={mode}
+          onModeChange={setMode}
+          onActionsChange={(next) => { actions = next; }}
+        />
+      );
     }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     root = createRoot(container);
@@ -478,7 +503,7 @@ describe("AuditFeed", () => {
     );
     // The privileged scope keeps the attribution filters and the export.
     expect(container.textContent).toContain("All responsible users");
-    expect(container.textContent).toContain("Export CSV");
+    expect(actions?.canExport).toBe(true);
   });
 
   it("resolves a basic-tier agent name from the company-readable actorId", async () => {
@@ -597,10 +622,12 @@ describe("AuditFeed", () => {
     const revokeUrl = vi.fn();
     (URL as unknown as { createObjectURL: unknown }).createObjectURL = createUrl;
     (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = revokeUrl;
-    await render();
+    let actions: import("./AuditFeed").AuditFeedActions | null = null;
+    await render({ onActionsChange: (next) => { actions = next; } });
     const setTimeoutSpy = vi.spyOn(window, "setTimeout");
 
-    await clickButton("Export CSV");
+    expect(actions?.canExport).toBe(true);
+    actions!.exportCsv();
     await flushReact();
 
     expect(exportCsvMock).toHaveBeenCalledWith(

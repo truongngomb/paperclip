@@ -99,6 +99,11 @@ export const auditApi = {
    * Fetch the filtered feed as a CSV blob. The server logs an `audit.exported`
    * activity row for the export itself (training-data export precedent).
    */
+  clearCompanyAuditLogs: (companyId: string) =>
+    api.delete<void>(`/companies/${companyId}/audit`, {
+      confirmation: "DELETE AUDIT",
+    }),
+
   exportAgentActionsCsv: async (
     companyId: string,
     filters: Omit<AuditActionFilters, "cursor" | "limit"> = {},

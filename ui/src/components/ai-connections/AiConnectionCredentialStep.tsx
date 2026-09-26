@@ -30,7 +30,8 @@ type Props = {
 
 /** Connections hosts the same provider step as agent setup, with its own save intent. */
 export function AiConnectionCredentialStep(props: Props) {
-  if (props.provider === "openrouter") return <ApiKeyConnectionStep {...props} />;
+  if (props.provider === "openrouter" || props.provider === "openai_compatible")
+    return <ApiKeyConnectionStep {...props} />;
   return <SubscriptionConnectionStep {...props} />;
 }
 
@@ -98,16 +99,36 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
 function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initialName, ownership, agentIds, allAgents, onComplete, onCancel }: Props) {
   const [name, setName] = useState(initialName);
   const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [wireApi, setWireApi] = useState("responses");
   const client = useQueryClient();
+  const gateway = provider === "openai_compatible";
   const save = useMutation({
-    mutationFn: () => aiConnectionsApi.create(companyId, { provider, method: "api_key", name, ownership, agentIds, allAgents, connectionId, apiKey }),
+    mutationFn: () => aiConnectionsApi.create(companyId, {
+      provider, method: "api_key", name, ownership, agentIds, allAgents, connectionId, apiKey,
+      ...(gateway ? { baseUrl: baseUrl.trim(), wireApi: wireApi as "chat" | "responses" } : {}),
+    }),
     onSuccess: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); onComplete({ ...result, method: "api_key" }); },
     onSettled: () => setApiKey(""),
   });
   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-4">
     <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>
+    {gateway && <div className="space-y-4">
+      <label className="block space-y-2 text-sm">Base URL
+        <Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://gateway.example.com/v1" inputMode="url" autoComplete="off" />
+      </label>
+      <label className="block space-y-2 text-sm">Protocol
+        <Select value={wireApi} onValueChange={setWireApi}>
+          <SelectTrigger aria-label="Protocol"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="responses">Responses API</SelectItem>
+            <SelectItem value="chat">Chat Completions</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
+    </div>}
     {save.error && <p role="alert" className="text-sm text-destructive">{save.error.message}</p>}
-    <ProviderApiKeyCard providerName="OpenRouter" value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder="Enter API key here" autoFocus />
-    <div className="flex justify-between gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><Button disabled={!name.trim() || !apiKey.trim() || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Connecting…" : "Connect"}</Button></div>
+    <ProviderApiKeyCard providerName={gateway ? "OpenAI-compatible gateway" : "OpenRouter"} value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder="Enter API key here" autoFocus />
+    <div className="flex justify-between gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><Button disabled={!name.trim() || !apiKey.trim() || (gateway && !baseUrl.trim()) || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Connecting…" : "Connect"}</Button></div>
   </div>;
 }

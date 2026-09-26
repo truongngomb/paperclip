@@ -11,6 +11,7 @@ import { aiConnectionsApi } from "@/api/ai-connections";
 import { AiConnectionPicker } from "./AiConnectionPicker";
 import { AiConnectionLegacyNotice } from "./AiConnectionManagement";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
+import { AI_PROVIDERS, aiDefaultMethod } from "./model";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,17 +22,23 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 
+/** Every connector an adapter can authenticate with; the first is the default. */
+export function aiProvidersForAdapter(
+  adapterType: string,
+): readonly AiProvider[] | undefined {
+  return (
+    {
+      claude_local: ["anthropic"],
+      codex_local: ["openai", "openai_compatible"],
+      opencode_local: ["openrouter"],
+      grok_local: ["xai"],
+    } as Record<string, readonly AiProvider[]>
+  )[adapterType];
+}
 export function aiProviderForAdapter(
   adapterType: string,
 ): AiProvider | undefined {
-  return (
-    {
-      claude_local: "anthropic",
-      codex_local: "openai",
-      opencode_local: "openrouter",
-      grok_local: "xai",
-    } as Record<string, AiProvider>
-  )[adapterType];
+  return aiProvidersForAdapter(adapterType)?.[0];
 }
 export function AiConnectionField({
   companyId,
@@ -51,12 +58,21 @@ export function AiConnectionField({
   adapterType: string;
   model?: string;
   value?: AiConnectionBinding;
-  onChange: (binding: AiConnectionBinding) => void;
+  onChange: (binding: AiConnectionBinding | null) => void;
   environmentId?: string;
   legacy?: boolean;
   readOnly?: boolean;
 }) {
-  const provider = aiProviderForAdapter(adapterType);
+  const providers = aiProvidersForAdapter(adapterType);
+  const [switchedProvider, setSwitchedProvider] = useState<AiProvider>();
+  // Follow an existing binding's connector; otherwise the adapter default or
+  // the connector the user last switched the picker to.
+  const provider =
+    value && providers?.includes(value.provider)
+      ? value.provider
+      : switchedProvider && providers?.includes(switchedProvider)
+        ? switchedProvider
+        : providers?.[0];
   const returnFocus = useRef<HTMLElement | null>(null);
   const restoreFocus = (event: Event) => { event.preventDefault(); returnFocus.current?.focus(); };
   const [adopting, setAdopting] = useState(false);
@@ -74,7 +90,7 @@ export function AiConnectionField({
   });
   const method: AiAuthMethod = (value?.mode !== "responsible_user" ? value?.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
-    ?? (provider === "openrouter" ? "api_key" : "subscription");
+    ?? (provider ? aiDefaultMethod(provider) : "subscription");
   if (!provider) return null;
   if (legacy && !value && !adopting)
     return (
@@ -92,7 +108,19 @@ export function AiConnectionField({
         </p>
       )}
       <AiConnectionPicker
-        requirement={{ companyId, provider }}
+        requirement={{ companyId, provider: provider! }}
+        providerChoices={
+          providers && providers.length > 1
+            ? providers.map((choice) => ({
+                value: choice,
+                label: AI_PROVIDERS[choice].name,
+              }))
+            : undefined
+        }
+        onSwitchProvider={(next) => {
+          setSwitchedProvider(next);
+          changeBinding({ provider: next, method: aiDefaultMethod(next), mode: "responsible_user" });
+        }}
         connections={accounts.data?.connections ?? []}
         value={value}
         currentUserId={accounts.data?.currentUserId ?? ""}
@@ -104,6 +132,7 @@ export function AiConnectionField({
         onChange={(binding) =>
           changeBinding(aiConnectionBindingSchema.parse(binding))
         }
+        onClear={value ? () => onChange(null) : undefined}
         onConnect={() => { returnFocus.current = document.activeElement as HTMLElement; setConnecting(true); }}
         onRetry={() => void accounts.refetch()}
       />
@@ -124,7 +153,7 @@ export function AiConnectionField({
           </DialogHeader>
           <p className="text-sm">
             {pendingAdoption?.mode === "responsible_user"
-              ? `Responsible user’s default. For you: ${accounts.data?.connections.find((account) => account.isDefault && account.provider === provider)?.name ?? "Not connected"}. Other users use their own default.`
+              ? `Responsible user’s default. For you: ${accounts.data?.connections.find((account) => account.isDefault && account.provider === (pendingAdoption?.provider ?? provider))?.name ?? "Not connected"}. Other users use their own default.`
               : accounts.data?.connections.find(
                   (account) => account.id === pendingAdoption?.connectionId,
                 )?.name}
@@ -158,9 +187,9 @@ export function AiConnectionField({
           </DialogHeader>
           <AiConnectionCredentialStep
             companyId={companyId}
-            provider={provider}
+            provider={provider!}
             initialMethod={method}
-            name={`My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
+            name={`My ${AI_PROVIDERS[provider!].name} ${method === "subscription" ? "subscription" : "API"}`}
             ownership="personal"
             agentIds={agentId ? [agentId] : []}
             allAgents={false}
@@ -171,7 +200,7 @@ export function AiConnectionField({
                 queryKey: ["ai-connections", companyId],
               });
               setConnecting(false);
-              changeBinding({ provider, method, mode: "responsible_user" });
+              changeBinding({ provider: provider!, method, mode: "responsible_user" });
             }}
           />
         </DialogContent>

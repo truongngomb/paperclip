@@ -5,25 +5,47 @@ export type AiConnectionStatus = AiManagedConnectionSummary["status"];
 
 export const AI_PROVIDERS: Record<
   AiProvider,
-  { name: string; subscriptionName?: string; logo?: string }
+  { name: string; subscriptionName?: string; logo?: string; methods: readonly AiAuthMethod[] }
 > = {
   anthropic: {
     name: "Claude",
     subscriptionName: "Claude subscription",
     logo: "/brands/claude-color.svg",
+    methods: ["subscription", "api_key"],
   },
   openai: {
     name: "OpenAI",
     subscriptionName: "ChatGPT subscription",
     logo: "/brands/codex-color.svg",
+    methods: ["subscription", "api_key"],
   },
-  openrouter: { name: "OpenRouter", logo: "/brands/apps/openrouter.svg" },
+  openai_compatible: {
+    name: "OpenAI-compatible",
+    logo: "/brands/apps/openai-compatible.svg",
+    methods: ["api_key"],
+  },
+  openrouter: { name: "OpenRouter", logo: "/brands/apps/openrouter.svg", methods: ["api_key"] },
   xai: {
     name: "Grok",
     subscriptionName: "Grok subscription",
     logo: "/brands/adapters/grok.svg",
+    methods: ["subscription", "api_key"],
   },
 };
+
+/** The sign-in method a fresh binding uses before an account is chosen. */
+export function aiDefaultMethod(provider: AiProvider): AiAuthMethod {
+  return AI_PROVIDERS[provider].methods[0];
+}
+
+/** Compact gateway label for choice lists and account details. */
+export function aiGatewayHost(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
+  }
+}
 
 export type AiConnectionSummary = Omit<AiManagedConnectionSummary, "isDefault"> & { isDefault?: boolean };
 

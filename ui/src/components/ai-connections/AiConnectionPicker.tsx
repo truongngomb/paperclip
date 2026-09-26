@@ -2,9 +2,12 @@ import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionChoiceList } from "@/features/connections/ConnectionChoiceList";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   AI_PROVIDERS,
   aiConnectionProblem,
+  aiDefaultMethod,
+  aiGatewayHost,
   aiMethodLabel,
   bindingProblem,
   matchesAiRequirement,
@@ -12,10 +15,14 @@ import {
   type AiConnectionBinding,
   type AiConnectionRequirement,
   type AiConnectionSummary,
+  type AiProvider,
 } from "./model";
 
 export interface AiConnectionPickerProps {
   requirement: AiConnectionRequirement;
+  /** Adapters that accept several connectors offer a switcher between them. */
+  providerChoices?: { value: AiProvider; label: string }[];
+  onSwitchProvider?: (provider: AiProvider) => void;
   connections: AiConnectionSummary[];
   value?: AiConnectionBinding;
   currentUserId: string;
@@ -25,12 +32,15 @@ export interface AiConnectionPickerProps {
   error?: string;
   readOnly?: boolean;
   onChange: (binding: AiConnectionBinding) => void;
+  onClear?: () => void;
   onConnect: () => void;
   onRetry?: () => void;
 }
 
 export function AiConnectionPicker({
   requirement,
+  providerChoices,
+  onSwitchProvider,
   connections,
   value,
   currentUserId,
@@ -39,11 +49,19 @@ export function AiConnectionPicker({
   error,
   readOnly,
   onChange,
+  onClear,
   onConnect,
   onRetry,
 }: AiConnectionPickerProps) {
   const compatible = connections.filter((connection) =>
     matchesAiRequirement(connection, requirement),
+  );
+  // Deleted accounts stay out of the choice list; the full list is still used
+  // below so a saved binding on a removed account keeps its recovery message.
+  // Recoverable accounts remain visible but disabled, so they can direct the
+  // user to reconnect rather than silently disappearing.
+  const selectable = compatible.filter(
+    (connection) => connection.status !== "revoked",
   );
   const personalDefault = personalAiDefault(
     connections,
@@ -62,7 +80,9 @@ export function AiConnectionPicker({
     connection: AiConnectionSummary,
   ) =>
     onChange({
-      provider: requirement.provider,
+      // A shared choice carries its own connector: the same adapter may offer
+      // several (OpenAI and an OpenAI-compatible gateway).
+      provider: connection.provider,
       method: connection.method,
       mode,
       connectionId: connection.id,
@@ -78,13 +98,28 @@ export function AiConnectionPicker({
           darkLogoUrl={requirement.provider === "xai" ? "/brands/adapters/grok-dark.svg" : undefined}
           size={32}
         />
-        <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
         <h3 className="text-sm font-semibold">AI connection</h3>
         <p className="text-xs text-muted-foreground">
           {AI_PROVIDERS[requirement.provider].name}
           {value && value.mode !== "responsible_user" && ` · ${aiMethodLabel(value.provider, value.method)}`}
         </p>
         </div>
+        {providerChoices && providerChoices.length > 1 && onSwitchProvider && !readOnly && (
+          <Select
+            value={requirement.provider}
+            onValueChange={(next) => onSwitchProvider(next as AiProvider)}
+          >
+            <SelectTrigger aria-label="Connector" className="h-8 w-fit max-w-44 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {providerChoices.map((choice) => (
+                <SelectItem key={choice.value} value={choice.value}>{choice.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
       </div>
       {loading ? (
         <div role="status" aria-label="Loading AI connections">
@@ -111,15 +146,15 @@ export function AiConnectionPicker({
                 <span className="block">For you: {personalDefault?.name ?? "Not connected"}</span>
                 <span className="block">Other users’ tasks use their own {AI_PROVIDERS[requirement.provider].name} connection.</span>
               </> },
-              ...compatible.filter((connection) => connection.ownership === "shared").map((connection) => ({
+              ...selectable.filter((connection) => connection.ownership === "shared").map((connection) => ({
                 id: connection.id, name: connection.name,
                 disabled: Boolean(aiConnectionProblem(connection)),
-                description: <>Company shared · {aiMethodLabel(connection.provider, connection.method)}{connection.accountLabel ? ` · ${connection.accountLabel}` : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
+                description: <>Company shared · {aiMethodLabel(connection.provider, connection.method)}{connection.baseUrl ? ` · ${aiGatewayHost(connection.baseUrl)}` : ""}{connection.accountLabel ? ` · ${connection.accountLabel}` : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
               })),
             ]}
             onSelect={(id) => {
-              if (id === "responsible_user") onChange({provider: requirement.provider, method: personalDefault?.method ?? requirement.method ?? (requirement.provider === "openrouter" ? "api_key" : "subscription"), mode: "responsible_user"});
-              else { const connection = compatible.find((item) => item.id === id)!; select("shared", connection); }
+              if (id === "responsible_user") onChange({provider: requirement.provider, method: personalDefault?.method ?? requirement.method ?? aiDefaultMethod(requirement.provider), mode: "responsible_user"});
+              else { const connection = selectable.find((item) => item.id === id)!; select("shared", connection); }
             }}
           />
           {problem && (
@@ -128,14 +163,24 @@ export function AiConnectionPicker({
             </p>
           )}
           {!readOnly && (
-            <Button
-              type="button"
-              variant="outline"
-              className="self-end"
-              onClick={onConnect}
-            >
-              Connect another account
-            </Button>
+            <div className="flex flex-wrap justify-end gap-2">
+              {value && onClear && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={onClear}
+                >
+                  Use existing authentication instead
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onConnect}
+              >
+                Connect another account
+              </Button>
+            </div>
           )}
         </>
       )}

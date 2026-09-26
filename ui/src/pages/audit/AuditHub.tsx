@@ -1,14 +1,15 @@
-import { useCallback, useEffect } from "react";
-import { History } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Download, History, Trash2 } from "lucide-react";
 import { EmptyState } from "@/components/EmptyState";
 import { PageTabBar } from "@/components/PageTabBar";
+import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { Costs } from "@/pages/Costs";
 import { Timeline } from "@/pages/Timeline";
-import { AuditFeed, type AuditFeedMode } from "./AuditFeed";
+import { AuditFeed, type AuditFeedActions, type AuditFeedMode } from "./AuditFeed";
 import { AuditRuns } from "./AuditRuns";
 import { RoutineAuditActivity } from "./RoutineAuditActivity";
 import {
@@ -23,6 +24,7 @@ export function AuditHub({ section }: { section: AuditSection }) {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [activityActions, setActivityActions] = useState<AuditFeedActions | null>(null);
   const scope = auditScopeFromSearchParams(searchParams);
   const mode: AuditFeedMode = scope.mode === "agents" ? "agents" : "all";
   const routineId = scope.entityType === "routine" ? scope.entityId ?? undefined : undefined;
@@ -83,12 +85,40 @@ export function AuditHub({ section }: { section: AuditSection }) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">Audit</h1>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-          Review what happened, inspect agent runs, and understand the costs and budget controls
-          behind your organization.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">Audit</h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
+            Review what happened, inspect agent runs, and understand the costs and budget controls
+            behind your organization.
+          </p>
+        </div>
+        {section === "activity" && activityActions && (activityActions.canExport || activityActions.canErase) ? (
+          <div className="flex flex-wrap gap-2">
+            {activityActions.canExport ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={activityActions.exportCsv}
+                disabled={activityActions.exporting}
+              >
+                <Download className="mr-1.5 h-4 w-4" />
+                {activityActions.exporting ? "Exporting…" : "Export CSV"}
+              </Button>
+            ) : null}
+            {activityActions.canErase ? (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={activityActions.eraseAuditLogs}
+                disabled={activityActions.erasing}
+              >
+                <Trash2 className="mr-1.5 h-4 w-4" />
+                {activityActions.erasing ? "Erasing…" : "Erase audit logs"}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <Tabs
@@ -111,6 +141,7 @@ export function AuditHub({ section }: { section: AuditSection }) {
           onModeChange={handleModeChange}
           actionDomain={actionDomain}
           onActionDomainChange={handleActionDomainChange}
+          onActionsChange={setActivityActions}
           lockedAgentId={scope.agentId ?? undefined}
           lockedRunId={scope.runId ?? undefined}
           lockedEntity={
