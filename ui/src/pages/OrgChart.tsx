@@ -11,8 +11,9 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
+import { Download, Maximize2, Minus, Network, Plus, Upload, Wrench } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { getAgentSkillNames } from "./Agents";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 
@@ -606,6 +607,8 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
           {allNodes.map((node) => {
             const agent = agentMap.get(node.id);
             const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+            const skills = getAgentSkillNames(agent);
+            const specializedSkills = skills.filter((s) => s !== "paperclip");
 
             return (
               <Card
@@ -648,6 +651,15 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
                     {agent && (
                       <span className="text-(length:--text-nano) text-muted-foreground/60 font-mono leading-tight mt-1">
                         {getAdapterLabel(agent.adapterType)}
+                      </span>
+                    )}
+                    {specializedSkills.length > 0 && (
+                      <span
+                        className="text-(length:--text-nano) text-muted-foreground/80 font-mono leading-tight mt-1 flex items-center gap-1 truncate w-full"
+                        title={`Specialized skills (${specializedSkills.length}): ${specializedSkills.join(", ")}`}
+                      >
+                        <Wrench className="h-2.5 w-2.5 text-muted-foreground/60 shrink-0" />
+                        <span className="truncate">{specializedSkills.length} skills: {specializedSkills.slice(0, 2).join(", ")}{specializedSkills.length > 2 ? ` +${specializedSkills.length - 2}` : ""}</span>
                       </span>
                     )}
                     {agent && agent.capabilities && (

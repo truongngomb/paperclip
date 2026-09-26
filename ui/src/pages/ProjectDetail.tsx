@@ -32,6 +32,7 @@ import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
 import { PROJECT_ICONS } from "../lib/project-icons";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -470,6 +471,25 @@ export function ProjectDetail() {
     },
   });
 
+  const deleteProject = useMutation({
+    mutationFn: () =>
+      projectsApi.remove(project!.id, resolvedCompanyId ?? lookupCompanyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.all(resolvedCompanyId ?? lookupCompanyId!),
+      });
+      const name = project?.name ?? "Project";
+      pushToast({ title: `"${name}" has been permanently deleted`, tone: "success" });
+      navigate("/projects");
+    },
+    onError: (err: any) => {
+      pushToast({
+        title: err?.message || "Failed to delete project",
+        tone: "error",
+      });
+    },
+  });
+
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
       if (!resolvedCompanyId) throw new Error("No organization selected");
@@ -753,12 +773,19 @@ export function ProjectDetail() {
           />
         </div>
         <div className="min-w-0 space-y-2">
-          <InlineEditor
-            value={project.name}
-            onSave={(name) => updateProject.mutate({ name })}
-            as="h2"
-            className="text-xl font-bold"
-          />
+          <div className="flex items-center gap-2">
+            <InlineEditor
+              value={project.name}
+              onSave={(name) => updateProject.mutate({ name })}
+              as="h2"
+              className="text-xl font-bold"
+            />
+            {project.archivedAt && (
+              <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                Archived
+              </Badge>
+            )}
+          </div>
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-caps) text-red-800 dark:text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
@@ -887,6 +914,8 @@ export function ProjectDetail() {
             getFieldSaveState={(field) => fieldSaveStates[field] ?? "idle"}
             onArchive={(archived) => archiveProject.mutate(archived)}
             archivePending={archiveProject.isPending}
+            onDelete={() => deleteProject.mutate()}
+            deletePending={deleteProject.isPending}
           />
         </div>
       )}

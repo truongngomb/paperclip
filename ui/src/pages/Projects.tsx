@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
@@ -21,9 +21,23 @@ import {
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Tabs } from "@/components/ui/tabs";
+import { PageTabBar } from "../components/PageTabBar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
+import { ArchiveRestore, ArrowUpDown, Check, Hexagon, Plus, Trash2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { useToastActions } from "../context/ToastContext";
 
 type ProjectSortField = "name" | "updated" | "created" | "targetDate";
 type ProjectSortDir = "asc" | "desc";
@@ -80,6 +94,10 @@ export function Projects() {
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToastActions();
+  const queryClient = useQueryClient();
+  const [tab, setTab] = useState<"active" | "archived">("active");
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [sortField, setSortField] = useState<ProjectSortField>("name");
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
 
@@ -88,15 +106,32 @@ export function Projects() {
   }, [setBreadcrumbs]);
 
   const { data: allProjects, isLoading, error } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: tab === "archived" }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: tab === "archived" }),
     enabled: !!selectedCompanyId,
   });
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
+  const unarchiveProject = useMutation({
+    mutationFn: (projectId: string) => projectsApi.update(projectId, { archivedAt: null }, selectedCompanyId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(selectedCompanyId!) });
+      pushToast({ title: "Project has been unarchived", tone: "success" });
+    },
+    onError: () => pushToast({ title: "Failed to unarchive project", tone: "error" }),
+  });
+  const deleteProject = useMutation({
+    mutationFn: (projectId: string) => projectsApi.remove(projectId, selectedCompanyId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(selectedCompanyId!) });
+      setProjectToDelete(null);
+      pushToast({ title: "Project has been permanently deleted", tone: "success" });
+    },
+    onError: (err: any) => pushToast({ title: err?.message || "Failed to delete project", tone: "error" }),
+  });
   const projects = useMemo(
-    () => allProjects ?? [],
-    [allProjects],
+    () => (allProjects ?? []).filter((project) => tab === "archived" ? Boolean(project.archivedAt) : !project.archivedAt),
+    [allProjects, tab],
   );
   const sortedProjects = useMemo(
     () => sortProjects(projects, sortField, sortDir),
@@ -128,50 +163,64 @@ export function Projects() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="ghost" size="sm" className="w-fit text-xs" title="Sort">
-              <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-              <span>Sort: {sortLabel}</span>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Tabs value={tab} onValueChange={(value) => setTab(value as "active" | "archived")}>
+          <PageTabBar
+            items={[
+              { value: "active", label: "Active" },
+              { value: "archived", label: "Archived" },
+            ]}
+            value={tab}
+            onValueChange={(value) => setTab(value as "active" | "archived")}
+          />
+        </Tabs>
+        <div className="flex items-center gap-2">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm" className="w-fit text-xs" title="Sort">
+                <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
+                <span>Sort: {sortLabel}</span>
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-44 p-0">
+              <div className="p-2 space-y-0.5">
+                {PROJECT_SORT_OPTIONS.map((option) => (
+                  <button
+                    key={option.field}
+                    type="button"
+                    className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
+                      sortField === option.field
+                        ? "bg-accent/50 text-foreground"
+                        : "text-muted-foreground hover:bg-accent/50"
+                    }`}
+                    onClick={() => {
+                      if (sortField === option.field) {
+                        setSortDir((current) => (current === "asc" ? "desc" : "asc"));
+                        return;
+                      }
+                      setSortField(option.field);
+                      setSortDir(option.field === "name" || option.field === "targetDate" ? "asc" : "desc");
+                    }}
+                  >
+                    <span>{option.label}</span>
+                    {sortField === option.field ? (
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Check className="h-3 w-3" />
+                        {sortDir === "asc" ? "Asc" : "Desc"}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+          {tab === "active" && (
+            <Button size="sm" variant="outline" onClick={openNewProject}>
+              <Plus className="h-4 w-4 mr-1" />
+              Add Project
             </Button>
-          </PopoverTrigger>
-          <PopoverContent align="start" className="w-44 p-0">
-            <div className="p-2 space-y-0.5">
-              {PROJECT_SORT_OPTIONS.map((option) => (
-                <button
-                  key={option.field}
-                  type="button"
-                  className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
-                    sortField === option.field
-                      ? "bg-accent/50 text-foreground"
-                      : "text-muted-foreground hover:bg-accent/50"
-                  }`}
-                  onClick={() => {
-                    if (sortField === option.field) {
-                      setSortDir((current) => (current === "asc" ? "desc" : "asc"));
-                      return;
-                    }
-                    setSortField(option.field);
-                    setSortDir(option.field === "name" || option.field === "targetDate" ? "asc" : "desc");
-                  }}
-                >
-                  <span>{option.label}</span>
-                  {sortField === option.field ? (
-                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <Check className="h-3 w-3" />
-                      {sortDir === "asc" ? "Asc" : "Desc"}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          </PopoverContent>
-        </Popover>
-        <Button size="sm" variant="outline" onClick={openNewProject}>
-          <Plus className="h-4 w-4 mr-1" />
-          Add Project
-        </Button>
+          )}
+        </div>
       </div>
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -179,9 +228,8 @@ export function Projects() {
       {!isLoading && projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
-          message="No projects yet."
-          action="Add Project"
-          onAction={openNewProject}
+          message={tab === "archived" ? "No archived projects." : "No projects yet."}
+          {...(tab === "active" ? { action: "Add Project", onAction: openNewProject } : {})}
         />
       )}
 
@@ -217,6 +265,11 @@ export function Projects() {
                         title={project.name}
                         subtitle={project.description ?? undefined}
                         reserveSubtitleSpace
+                        secondaryRow={tab === "archived" ? (
+                          <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                            Archived
+                          </Badge>
+                        ) : undefined}
                         to={projectUrl(project)}
                         className={state === "left" ? "group text-foreground/55" : "group"}
                         trailing={
@@ -238,6 +291,37 @@ export function Projects() {
                               </span>
                             )}
                             <StatusBadge status={project.status} />
+                            {tab === "archived" && (
+                              <>
+                                <Button
+                                  size="xs"
+                                  variant="outline"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    unarchiveProject.mutate(project.id);
+                                  }}
+                                  disabled={unarchiveProject.isPending}
+                                >
+                                  <ArchiveRestore className="h-3 w-3 mr-1" />
+                                  Unarchive
+                                </Button>
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  className="text-destructive hover:text-destructive"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    setProjectToDelete(project);
+                                  }}
+                                  disabled={deleteProject.isPending}
+                                >
+                                  <Trash2 className="h-3 w-3 mr-1" />
+                                  Delete
+                                </Button>
+                              </>
+                            )}
                             <MembershipAction
                               state={state}
                               pending={joinLeavePending}
@@ -279,6 +363,35 @@ export function Projects() {
           })}
         </div>
       )}
+
+      <AlertDialog
+        open={projectToDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && !deleteProject.isPending) setProjectToDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete project permanently?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to permanently delete &ldquo;{projectToDelete?.name}&rdquo; and all of its tasks? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteProject.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteProject.isPending || !projectToDelete}
+              onClick={(event) => {
+                event.preventDefault();
+                if (projectToDelete) deleteProject.mutate(projectToDelete.id);
+              }}
+            >
+              {deleteProject.isPending ? "Deleting..." : "Delete project"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -21,6 +21,16 @@ import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
 import { EnvironmentVariablesEditor } from "./environment-variables-editor";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface ProjectPropertiesProps {
   project: Project;
@@ -30,6 +40,8 @@ interface ProjectPropertiesProps {
   getFieldSaveState?: (field: ProjectConfigFieldKey) => ProjectFieldSaveState;
   onArchive?: (archived: boolean) => void;
   archivePending?: boolean;
+  onDelete?: () => void;
+  deletePending?: boolean;
 }
 
 export type ProjectFieldSaveState = "idle" | "saving" | "saved" | "error";
@@ -136,72 +148,130 @@ function PropertyRow({
   );
 }
 
-function ArchiveDangerZone({
+function ProjectDangerZone({
   project,
   onArchive,
   archivePending,
+  onDelete,
+  deletePending,
 }: {
   project: Project;
   onArchive: (archived: boolean) => void;
   archivePending?: boolean;
+  onDelete?: () => void;
+  deletePending?: boolean;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const isArchive = !project.archivedAt;
   const action = isArchive ? "Archive" : "Unarchive";
 
   return (
-    <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
-      <p className="text-sm text-muted-foreground">
-        {isArchive
-          ? "Archive this project to hide it from the sidebar and project selectors."
-          : "Unarchive this project to restore it in the sidebar and project selectors."}
-      </p>
-      {archivePending ? (
-        <Button size="sm" variant="destructive" disabled>
-          <Loader2 className="h-3 w-3 animate-spin mr-1" />
-          {isArchive ? "Archiving..." : "Unarchiving..."}
-        </Button>
-      ) : confirming ? (
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-destructive font-medium">
-            {action} &ldquo;{project.name}&rdquo;?
-          </span>
+    <div className="space-y-4 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+      <div className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          {isArchive
+            ? "Archive this project to hide it from the sidebar and project selectors."
+            : "Unarchive this project to restore it in the sidebar and project selectors."}
+        </p>
+        {archivePending ? (
+          <Button size="sm" variant="destructive" disabled>
+            <Loader2 className="h-3 w-3 animate-spin mr-1" />
+            {isArchive ? "Archiving..." : "Unarchiving..."}
+          </Button>
+        ) : confirming ? (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-destructive font-medium">
+              {action} &ldquo;{project.name}&rdquo;?
+            </span>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => {
+                setConfirming(false);
+                onArchive(isArchive);
+              }}
+            >
+              Confirm
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
           <Button
             size="sm"
             variant="destructive"
-            onClick={() => {
-              setConfirming(false);
-              onArchive(isArchive);
-            }}
+            onClick={() => setConfirming(true)}
           >
-            Confirm
+            {isArchive ? (
+              <><Archive className="h-3 w-3 mr-1" />{action} project</>
+            ) : (
+              <><ArchiveRestore className="h-3 w-3 mr-1" />{action} project</>
+            )}
           </Button>
+        )}
+      </div>
+
+      {onDelete && project.archivedAt && (
+        <div className="pt-3 border-t border-destructive/20 space-y-2">
+          <p className="text-sm text-muted-foreground">
+Permanently delete this project and all of its tasks. This action cannot be undone.
+          </p>
           <Button
             size="sm"
-            variant="outline"
-            onClick={() => setConfirming(false)}
+            variant="destructive"
+            onClick={() => setDeleteDialogOpen(true)}
+            disabled={deletePending}
           >
-            Cancel
+            <Trash2 className="h-3 w-3 mr-1" />
+            {deletePending ? "Deleting..." : "Delete project permanently"}
           </Button>
+          <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete project permanently?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Are you sure you want to permanently delete &ldquo;{project.name}&rdquo; and all of its tasks? This action cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={deletePending}>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  disabled={deletePending}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setDeleteDialogOpen(false);
+                    onDelete();
+                  }}
+                >
+                  {deletePending ? "Deleting..." : "Delete project"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
-      ) : (
-        <Button
-          size="sm"
-          variant="destructive"
-          onClick={() => setConfirming(true)}
-        >
-          {isArchive ? (
-            <><Archive className="h-3 w-3 mr-1" />{action} project</>
-          ) : (
-            <><ArchiveRestore className="h-3 w-3 mr-1" />{action} project</>
-          )}
-        </Button>
       )}
     </div>
   );
 }
 
-export function ProjectProperties({ project, repositories, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
+export function ProjectProperties({
+  project,
+  repositories,
+  onUpdate,
+  onFieldUpdate,
+  getFieldSaveState,
+  onArchive,
+  archivePending,
+  onDelete,
+  deletePending,
+}: ProjectPropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
@@ -993,17 +1063,19 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
 
       </div>
 
-      {onArchive && (
+      {(onArchive || onDelete) && (
         <>
           <Separator className="my-4" />
           <div className="space-y-4 py-4">
             <div className="text-xs font-medium text-destructive uppercase tracking-wide">
               Danger Zone
             </div>
-            <ArchiveDangerZone
+            <ProjectDangerZone
               project={project}
-              onArchive={onArchive}
+              onArchive={onArchive ?? (() => {})}
               archivePending={archivePending}
+              onDelete={onDelete}
+              deletePending={deletePending}
             />
           </div>
         </>
