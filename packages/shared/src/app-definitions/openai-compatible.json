@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "slug": "openai-compatible",
+  "name": "OpenAI-compatible",
+  "description": "Connect agents to any OpenAI-compatible endpoint.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/openai-compatible.svg"
+  },
+  "urlPatterns": [],
+  "methods": [
+    {
+      "key": "ai-api_key",
+      "label": "OpenAI-compatible API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "openai_compatible",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        },
+        {
+          "key": "baseUrl",
+          "label": "Base URL",
+          "type": "text",
+          "required": true,
+          "placeholder": "https://gateway.example.com/v1",
+          "helperMd": "Any OpenAI-compatible endpoint. Verified with a models request against it."
+        },
+        {
+          "key": "wireApi",
+          "label": "Protocol",
+          "type": "select",
+          "required": true,
+          "placeholder": "responses",
+          "defaultValue": "responses",
+          "options": [
+            {
+              "value": "responses",
+              "label": "Responses API"
+            },
+            {
+              "value": "chat",
+              "label": "Chat Completions"
+            }
+          ]
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "OPENAI_API_KEY"
+      }
+    }
+  ]
+}

@@ -17,6 +17,22 @@ describe("dynamic adapter type validation schemas", () => {
     ).toBe("external_adapter");
   });
 
+  it("accepts a managed AI connection clear only for agent updates", () => {
+    expect(
+      updateAgentSchema.parse({
+        runtimeConfig: { aiConnection: null },
+      }).runtimeConfig?.aiConnection,
+    ).toBeNull();
+
+    expect(() =>
+      createAgentSchema.parse({
+        name: "Unmanaged Agent",
+        adapterType: "codex_local",
+        runtimeConfig: { aiConnection: null },
+      }),
+    ).toThrow();
+  });
+
   it("still rejects blank adapter types", () => {
     expect(() =>
       createAgentSchema.parse({

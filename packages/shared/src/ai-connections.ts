@@ -29,6 +29,7 @@ export type ConnectionPurposeTransport = z.infer<
 export const AI_PROVIDERS = [
   "anthropic",
   "openai",
+  "openai_compatible",
   "openrouter",
   "xai",
 ] as const;
@@ -36,6 +37,14 @@ export const aiProviderSchema = z.enum(AI_PROVIDERS);
 export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
 export type AiProvider = z.infer<typeof aiProviderSchema>;
 export type AiAuthMethod = z.infer<typeof aiAuthMethodSchema>;
+
+/** App catalog slugs are kebab-case, whereas runtime provider IDs retain
+ * their adapter-compatible underscore form. Keep this translation centralized
+ * for gallery links, recovery intents, and stored application provenance. */
+export function aiProviderAppSlug(provider: AiProvider): string {
+  return provider === "openai_compatible" ? "openai-compatible" : provider;
+}
+
 const requirement = { provider: aiProviderSchema, method: aiAuthMethodSchema };
 export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
   z.object({
@@ -67,6 +76,35 @@ export type AiConnectionBinding = z.infer<typeof aiConnectionBindingSchema>;
 export const aiConnectionMetadataSchema = z.object(requirement).strict();
 export type AiConnectionMetadata = z.infer<typeof aiConnectionMetadataSchema>;
 
+export const aiGatewayWireApiSchema = z.enum(["chat", "responses"]);
+export type AiGatewayWireApi = z.infer<typeof aiGatewayWireApiSchema>;
+/** Gateway routing stored beside the AI metadata for OpenAI-compatible accounts. */
+export const aiGatewayConfigSchema = z
+  .object({
+    baseUrl: z.string().trim().min(1).max(2048),
+    wireApi: aiGatewayWireApiSchema,
+  })
+  .strict();
+export type AiGatewayConfig = z.infer<typeof aiGatewayConfigSchema>;
+
+/** The gateway endpoint is company-chosen, so restrict it to https (loopback
+ * http allowed for local model servers) and reject embedded credentials. */
+export function isAiGatewayBaseUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.username || url.password || url.hash) return false;
+  return (
+    url.protocol === "https:" ||
+    (url.protocol === "http:" &&
+      // URL.hostname keeps the brackets on IPv6 literals.
+      ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname))
+  );
+}
+
 /** Existing integrations only. This table describes compatibility, never routing. */
 export const AI_CONNECTION_CAPABILITIES: Record<
   AiProvider,
@@ -91,6 +129,14 @@ export const AI_CONNECTION_CAPABILITIES: Record<
     name: "OpenAI",
     methods: {
       subscription: { adapters: ["codex_local"], envKey: "CODEX_HOME" },
+      api_key: { adapters: ["codex_local"], envKey: "OPENAI_API_KEY" },
+    },
+  },
+  openai_compatible: {
+    name: "OpenAI-compatible",
+    methods: {
+      // The gateway credential rides OPENAI_API_KEY; codex reads the endpoint
+      // from the merged model_providers config (PAPERCLIP_CODEX_PROVIDERS).
       api_key: { adapters: ["codex_local"], envKey: "OPENAI_API_KEY" },
     },
   },
@@ -164,6 +210,8 @@ export interface AiManagedConnectionSummary {
   method: AiAuthMethod;
   name: string;
   accountLabel?: string;
+  baseUrl?: string;
+  wireApi?: AiGatewayWireApi;
   ownership: "personal" | "shared";
   ownerUserId?: string;
   ownerName?: string;
@@ -179,6 +227,8 @@ export const createAiConnectionSchema = z
     apiKey: z.string().trim().min(1).max(32768).optional(),
     loginSessionId: z.string().max(128).optional(),
     connectionId: z.string().uuid().optional(),
+    baseUrl: z.string().trim().min(1).max(2048).optional(),
+    wireApi: aiGatewayWireApiSchema.optional(),
     agentIds: z.array(z.string().uuid()).max(1000).default([]),
     allAgents: z.boolean().default(false),
   })
@@ -195,6 +245,26 @@ export const createAiConnectionSchema = z
         code: "custom",
         message:
           "Provide exactly the credential for the selected sign-in method",
+      });
+    }
+    if (v.provider === "openai_compatible") {
+      if (!v.baseUrl || !isAiGatewayBaseUrl(v.baseUrl))
+        ctx.addIssue({
+          code: "custom",
+          path: ["baseUrl"],
+          message:
+            "Enter the gateway's https base URL (http is allowed for localhost only)",
+        });
+      if (!v.wireApi)
+        ctx.addIssue({
+          code: "custom",
+          path: ["wireApi"],
+          message: "Choose the gateway protocol",
+        });
+    } else if (v.baseUrl || v.wireApi) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Only OpenAI-compatible connections take a gateway base URL",
       });
     }
   });

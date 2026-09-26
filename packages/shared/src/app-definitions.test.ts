@@ -704,7 +704,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(51);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(52);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );

@@ -61,19 +61,28 @@ export const createAgentInstructionsBundleSchema = z.object({
   }),
 });
 
-export const agentRuntimeConfigSchema = z.object({
-  aiConnection: aiConnectionBindingSchema.optional(),
-  debug: z.object({
-    providerTrace: z.literal("raw").optional(),
-  }).strict().optional(),
-}).catchall(z.unknown()).superRefine((value, ctx) => {
-  if (Object.prototype.hasOwnProperty.call(value, "modelProfiles")) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["modelProfiles"],
-      message: "runtimeConfig.modelProfiles is no longer supported",
-    });
-  }
+function createAgentRuntimeConfigSchema(options: { allowNullAiConnection?: boolean } = {}) {
+  return z.object({
+    aiConnection: options.allowNullAiConnection
+      ? aiConnectionBindingSchema.nullable().optional()
+      : aiConnectionBindingSchema.optional(),
+    debug: z.object({
+      providerTrace: z.literal("raw").optional(),
+    }).strict().optional(),
+  }).catchall(z.unknown()).superRefine((value, ctx) => {
+    if (Object.prototype.hasOwnProperty.call(value, "modelProfiles")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["modelProfiles"],
+        message: "runtimeConfig.modelProfiles is no longer supported",
+      });
+    }
+  });
+}
+
+export const agentRuntimeConfigSchema = createAgentRuntimeConfigSchema();
+const updateAgentRuntimeConfigSchema = createAgentRuntimeConfigSchema({
+  allowNullAiConnection: true,
 });
 
 export const createAgentSchema = z.object({
@@ -141,10 +150,11 @@ export const createAgentHireSchema = createAgentSchema.extend({
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
 export const updateAgentSchema = objectWithoutDefaults(
-  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true }),
+  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true, runtimeConfig: true }),
 )
   .partial()
   .extend({
+    runtimeConfig: updateAgentRuntimeConfigSchema.optional(),
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
