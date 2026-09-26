@@ -7,6 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
+  aiGatewayConfigSchema,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { aiConnectionService } from "./ai-connections.js";
@@ -39,6 +40,7 @@ export const AI_AUTH_ENV_KEYS = [
   "OPENCODE_CONFIG",
   "OPENCODE_CONFIG_DIR",
   "PAPERCLIP_OPENCODE_PROVIDERS",
+  "PAPERCLIP_CODEX_PROVIDERS",
   "ANTHROPIC_BASE_URL",
   "OPENAI_BASE_URL",
   "XAI_BASE_URL",
@@ -91,7 +93,7 @@ export async function assertManagedAiProjectAuth(
   const files =
     provider === "anthropic"
       ? [".claude/settings.json", ".claude/settings.local.json"]
-      : provider === "openai"
+      : provider === "openai" || provider === "openai_compatible"
         ? [".codex/config.toml"]
         : [];
   const pattern =
@@ -293,6 +295,36 @@ export async function prepareManagedAiRuntime(
       });
       env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
     }
+    if (input.binding.provider === "openai_compatible") {
+      // Codex reaches the gateway through a model_providers table (merged into
+      // the managed CODEX_HOME config.toml by the adapter); the key rides the
+      // capability env var named by env_key, and auth.json below — Codex
+      // (>= 0.122) ignores OPENAI_API_KEY from the environment and only reads
+      // $CODEX_HOME/auth.json.
+      const gateway = aiGatewayConfigSchema.safeParse(
+        selection.connection.config.aiGateway,
+      );
+      if (!gateway.success)
+        throw unprocessable(
+          "Reconnect this OpenAI-compatible connection with its gateway base URL",
+          { code: "ai_connection_incompatible" },
+        );
+      env.PAPERCLIP_CODEX_PROVIDERS = JSON.stringify({
+        providers: {
+          openai_compatible: {
+            name: selection.connection.name,
+            base_url: gateway.data.baseUrl,
+            env_key: capability.envKey,
+            wire_api: gateway.data.wireApi,
+          },
+        },
+        model_provider: "openai_compatible",
+      });
+      env.CODEX_API_KEY = value;
+      await writeFile(authFile, JSON.stringify({ OPENAI_API_KEY: value }), {
+        mode: 0o600,
+      });
+    }
     const generation = createHash("sha256")
       .update(value)
       .digest("hex")
@@ -307,6 +339,7 @@ export async function prepareManagedAiRuntime(
       attribution: selection.attribution,
       accountName: selection.connection.name,
       accountOwnerUserId: selection.grant.subjectUserId,
+      connection: selection.connection,
       identity,
       home,
       cleanup: async () => {

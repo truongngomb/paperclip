@@ -20,6 +20,8 @@ import {
 import {
   AI_CONNECTION_CAPABILITIES,
   aiConnectionMetadataSchema,
+  aiProviderAppSlug,
+  aiGatewayConfigSchema,
   aiSubscriptionNeedsIsolatedLogin,
   isAiConnectionCompatible,
   type AiConnectionBinding,
@@ -134,6 +136,8 @@ export function aiConnectionService(db: Db) {
           ...metadata.data,
           name: connection.name,
           accountLabel: grant.providerTenant?.name,
+          ...aiGatewayConfigSchema.safeParse(connection.config.aiGateway)
+            .data,
           ...(needsReconnect ? { unavailableReason: "Reconnect with a separate sign-in to protect your existing terminal login." } : {}),
           ownership:
             grant.kind === "user" ? ("personal" as const) : ("shared" as const),
@@ -468,6 +472,15 @@ export function aiConnectionService(db: Db) {
       );
     const id = reconnect?.connection.id ?? randomUUID();
     const grantId = reconnect?.grant.id ?? randomUUID();
+    // The gateway endpoint travels with OpenAI-compatible credentials; other
+    // providers never carry one, and reconnect updates it alongside the key.
+    const gateway =
+      input.provider === "openai_compatible"
+        ? aiGatewayConfigSchema.parse({
+            baseUrl: "baseUrl" in input ? input.baseUrl : undefined,
+            wireApi: "wireApi" in input ? input.wireApi : undefined,
+          })
+        : undefined;
     return db.transaction(async (tx) => {
       const secrets = secretService(tx);
       if (sessionId) {
@@ -589,7 +602,8 @@ export function aiConnectionService(db: Db) {
         if (targets.length !== new Set(input.agentIds).size)
           throw forbidden("Agent does not belong to this company");
       }
-      const key = `app-gallery:${input.provider}`;
+      const appSlug = aiProviderAppSlug(input.provider);
+      const key = `app-gallery:${appSlug}`;
       await tx
         .insert(toolApplications)
         .values({
@@ -597,7 +611,7 @@ export function aiConnectionService(db: Db) {
           applicationKey: key,
           name: AI_CONNECTION_CAPABILITIES[input.provider].name,
           type: "mcp_http",
-          metadata: { sourceTemplateKey: input.provider },
+          metadata: { sourceTemplateKey: appSlug },
           ownerUserId: userId,
         })
         .onConflictDoNothing();
@@ -617,6 +631,15 @@ export function aiConnectionService(db: Db) {
           ),
         );
       if (!app) throw unprocessable("Could not find the provider application");
+      await tx
+        .update(toolApplications)
+        .set({ status: "active", archivedAt: null, updatedAt: new Date() })
+        .where(
+          eq(
+            toolApplications.id,
+            reconnect?.connection.applicationId ?? app.id,
+          ),
+        );
       if (reconnect)
         await tx
           .update(toolConnections)
@@ -625,7 +648,12 @@ export function aiConnectionService(db: Db) {
             status: "active",
             healthStatus: "ok",
             healthMessage: null,
-            config: { ...reconnect.connection.config, aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic" },
+            config: {
+              ...reconnect.connection.config,
+              sourceTemplateKey: appSlug,
+              ...(gateway ? { aiGateway: gateway } : {}),
+              aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",
+            },
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, id));
@@ -647,8 +675,9 @@ export function aiConnectionService(db: Db) {
             enabled: true,
             healthStatus: "ok",
             config: {
-              sourceTemplateKey: input.provider,
+              sourceTemplateKey: appSlug,
               ai: { provider: input.provider, method: input.method },
+              ...(gateway ? { aiGateway: gateway } : {}),
               aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",
             },
             createdByUserId: userId,

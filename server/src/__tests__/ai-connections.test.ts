@@ -5,10 +5,9 @@ import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets } from "@paperclipai/db";
+import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolApplications, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
@@ -33,7 +32,9 @@ const input = { companyId, agentId, adapterType: "claude_local", binding };
 const create = (userId: string, name: string, ownership: "personal" | "shared" = "personal") => service.save(companyId, userId, { provider: "anthropic", method: "api_key", ownership, name, apiKey: "fixture", agentIds: [], allAgents: true }, `fixture-${name}`);
 
 beforeAll(async () => {
-  home = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-tests-"));
+  // Anchor the fixture home inside this repository's volume so walk-up project
+  // authentication checks never traverse into the host user's personal home.
+  home = await mkdtemp(path.join(process.cwd(), ".tmp-ai-tests-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ai-connection-fixture");
   database = await startEmbeddedPostgresTestDatabase("paperclip-ai-db-");
@@ -245,6 +246,67 @@ describe("managed AI connections", () => {
     await db.update(connectionGrants).set({ status: "revoked", updatedAt: new Date() }).where(eq(connectionGrants.id, current.grant.id));
     await expect(service.save(companyId, "bob", reconnect, "fixture-stale", undefined, beforeRevocation)).rejects.toThrow("changed");
     await expect(service.select({ ...input, userId: "bob" })).rejects.toThrow("Reconnect");
+  });
+  it("reactivates an archived provider application when reconnecting an AI account", async () => {
+    const userId = `reconnect-application-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalId: userId,
+      principalType: "user",
+      status: "active",
+      membershipRole: "member",
+    });
+    const created = await service.save(
+      companyId,
+      userId,
+      {
+        provider: "openai_compatible",
+        method: "api_key",
+        ownership: "personal",
+        name: "Reconnected gateway",
+        apiKey: "fixture-before-reconnect",
+        baseUrl: "https://gateway.example.com/v1",
+        wireApi: "responses",
+        agentIds: [],
+        allAgents: true,
+      },
+      "fixture-before-reconnect",
+    );
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, created.connectionId));
+    await db
+      .update(toolApplications)
+      .set({ status: "archived", archivedAt: new Date() })
+      .where(eq(toolApplications.id, connection.applicationId));
+
+    await service.save(
+      companyId,
+      userId,
+      {
+        provider: "openai_compatible",
+        method: "api_key",
+        ownership: "personal",
+        name: connection.name,
+        connectionId: connection.id,
+        apiKey: "fixture-after-reconnect",
+        baseUrl: "https://gateway.example.com/v1",
+        wireApi: "responses",
+        agentIds: [],
+        allAgents: true,
+      },
+      "fixture-after-reconnect",
+    );
+
+    expect(
+      (
+        await db
+          .select({ status: toolApplications.status, archivedAt: toolApplications.archivedAt })
+          .from(toolApplications)
+          .where(eq(toolApplications.id, connection.applicationId))
+      )[0],
+    ).toMatchObject({ status: "active", archivedAt: null });
   });
   it("rejects invalid purpose/transport combinations in the database", async () => {
     const selected = await service.select({ ...input, userId: "alice" });
@@ -613,6 +675,97 @@ describe("managed AI connections", () => {
     await expect(validateAiApiKey("anthropic", "fixture", request)).rejects.toThrow("rejected");
     expect(request.mock.calls[0][1].redirect).toBe("error");
   });
+  it("verifies OpenAI-compatible keys only against the connection's safe gateway endpoint", async () => {
+    const request = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    const publicLookup = vi.fn().mockResolvedValue([{ address: "8.8.8.8", family: 4 }]);
+    await expect(validateAiApiKey("openai_compatible", "fixture", request)).rejects.toThrow("base URL");
+    await expect(validateAiApiKey("openai_compatible", "fixture", request, "http://gateway.example.com/v1")).rejects.toThrow("base URL");
+    expect(request).not.toHaveBeenCalled();
+    await validateAiApiKey("openai_compatible", "fixture", request, "https://gateway.example.com/v1/", publicLookup);
+    expect(publicLookup).toHaveBeenCalledWith("gateway.example.com", { all: true, verbatim: true });
+    expect(request.mock.calls[0][0]).toBe("https://gateway.example.com/v1/models");
+    expect(request.mock.calls[0][1].headers.Authorization).toBe("Bearer fixture");
+    expect(request.mock.calls[0][1].redirect).toBe("error");
+    await validateAiApiKey("openai_compatible", "fixture", request, "http://127.0.0.1:8000/v1");
+    expect(request.mock.calls[1][0]).toBe("http://127.0.0.1:8000/v1/models");
+    const privateLookup = vi.fn().mockResolvedValue([{ address: "10.0.0.7", family: 4 }]);
+    await expect(validateAiApiKey("openai_compatible", "fixture", request, "https://private.example/v1", privateLookup)).rejects.toThrow("private network");
+    expect(request).toHaveBeenCalledTimes(2);
+    const rejected = vi.fn().mockResolvedValue(new Response("secret-provider-body", { status: 403 }));
+    await expect(validateAiApiKey("openai_compatible", "fixture", rejected, "https://gateway.example.com/v1", publicLookup)).rejects.toThrow("rejected");
+    expect(JSON.stringify(rejected.mock.calls)).not.toContain("secret-provider-body");
+  });
+  it("routes OpenAI-compatible gateway credentials through the merged codex provider table", async () => {
+    const userId = "openai-compatible-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const saved = await service.save(companyId, userId, {
+      provider: "openai_compatible", method: "api_key", ownership: "personal",
+      name: "Company gateway", apiKey: "fixture-gateway-key", baseUrl: "https://gateway.example.com/v1", wireApi: "responses",
+      agentIds: [], allAgents: true,
+    }, "fixture-gateway-key");
+    const listed = (await service.list(companyId, userId)).find((account) => account.id === saved.connectionId);
+    expect(listed).toMatchObject({ provider: "openai_compatible", method: "api_key", baseUrl: "https://gateway.example.com/v1", wireApi: "responses" });
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    expect(stored?.config).toMatchObject({
+      sourceTemplateKey: "openai-compatible",
+      ai: { provider: "openai_compatible", method: "api_key" },
+      aiGateway: { baseUrl: "https://gateway.example.com/v1", wireApi: "responses" },
+    });
+    const codexAgentId = randomUUID();
+    await db.insert(agents).values({ id: codexAgentId, companyId, name: "Gateway Codex", adapterType: "codex_local" });
+    const gatewayInput = {
+      companyId,
+      agentId: codexAgentId,
+      responsibleUserId: userId,
+      adapterType: "codex_local",
+      binding: { provider: "openai_compatible", method: "api_key", mode: "responsible_user" } as const,
+    };
+    const run = await prepareManagedAiRuntime(db, {
+      ...gatewayInput,
+      config: { model: "gateway-model", cwd: home, env: { OPENAI_API_KEY: "ambient", OPENROUTER_API_KEY: "ambient" } },
+    });
+    try {
+      const env = run.config.env as Record<string, string>;
+      expect(env.OPENAI_API_KEY).toBe("fixture-gateway-key");
+      expect(env.CODEX_API_KEY).toBe("fixture-gateway-key");
+      expect(env.OPENROUTER_API_KEY).toBe("");
+      const authContent = await readFile(path.join(env.CODEX_HOME, "auth.json"), "utf8");
+      expect(JSON.parse(authContent)).toEqual({ OPENAI_API_KEY: "fixture-gateway-key" });
+      expect(JSON.parse(env.PAPERCLIP_CODEX_PROVIDERS)).toEqual({
+        providers: {
+          openai_compatible: {
+            name: "Company gateway",
+            base_url: "https://gateway.example.com/v1",
+            env_key: "OPENAI_API_KEY",
+            wire_api: "responses",
+          },
+        },
+        model_provider: "openai_compatible",
+      });
+    } finally { await run.cleanup(); }
+    // An existing manual provider table from prior workarounds is safely replaced
+    // by the managed gateway table rather than blocking execution.
+    const migratingRun = await prepareManagedAiRuntime(db, {
+      ...gatewayInput,
+      config: { model: "gateway-model", cwd: home, env: { PAPERCLIP_CODEX_PROVIDERS: "{}" } },
+    });
+    try {
+      expect(JSON.parse((migratingRun.config.env as Record<string, string>).PAPERCLIP_CODEX_PROVIDERS)).toEqual({
+        providers: {
+          openai_compatible: {
+            name: "Company gateway",
+            base_url: "https://gateway.example.com/v1",
+            env_key: "OPENAI_API_KEY",
+            wire_api: "responses",
+          },
+        },
+        model_provider: "openai_compatible",
+      });
+    } finally { await migratingRun.cleanup(); }
+    expect(isAiConnectionCompatible({ provider: "openai_compatible", method: "api_key" }, "codex_local")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "openai_compatible", method: "api_key" }, "opencode_local")).toBe(false);
+    expect(isAiConnectionCompatible({ provider: "openai_compatible", method: "api_key" }, "claude_local")).toBe(false);
+  });
   it("uses the authenticated responsible user for agent-originated configuration and tests", async () => {
     const req = { actor: { type: "agent", agentId, onBehalfOfUserId: "alice" } } as express.Request;
     const selected = await service.select({ ...input, userId: responsibleUserForAiRequest(req) });
@@ -721,6 +874,35 @@ describe("managed AI connections", () => {
       await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
     }
   });
+
+  it("clears an existing managed AI connection only when PATCH explicitly sends null", async () => {
+    const { agentRoutes } = await import("../routes/agents.js");
+    const id = randomUUID();
+    await db.insert(agents).values({
+      id,
+      companyId,
+      name: "Unmanaged migration",
+      adapterType: "claude_local",
+      runtimeConfig: { aiConnection: binding, heartbeat: { enabled: false } },
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] };
+      next();
+    });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      res.status(error.status ?? 500).json({ error: error.message });
+    });
+
+    const clears = await request(app)
+      .patch(`/api/agents/${id}`)
+      .send({ runtimeConfig: { heartbeat: { enabled: false }, aiConnection: null } });
+    expect(clears.status, JSON.stringify(clears.body)).toBe(200);
+    expect(clears.body.runtimeConfig.aiConnection).toBeUndefined();
+    expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toBeUndefined();
+  }, 30_000);
 
   it("creates and hires agents with an authorized restricted shared connection", async () => {
     const { agentRoutes } = await import("../routes/agents.js");

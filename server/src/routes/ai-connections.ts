@@ -1,6 +1,8 @@
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
+import { lookup as dnsLookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { z } from "zod";
 import { Router, type Request } from "express";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -18,6 +20,7 @@ import {
   localAiConnectionSchema,
   localAiLoginStartSchema,
   isAiConnectionCompatible,
+  isAiGatewayBaseUrl,
   type AiConnectionLoginIntent,
   type AiProvider,
   type AiConnectionBinding,
@@ -132,11 +135,68 @@ export async function canInstallSharedAiConnectionForNewAgent(
     connection.creator === userId || await accessService(db).hasPermission(companyId, "user", userId, "tools:manage_connections");
 }
 
-/** Fixed provider endpoints; credentials are never sent to a caller-supplied URL or through a redirect. */
+type AiGatewayDnsLookup = (
+  hostname: string,
+  options: { all: true; verbatim: true },
+) => Promise<Array<{ address: string; family: number }>>;
+const defaultAiGatewayDnsLookup: AiGatewayDnsLookup = (hostname, options) =>
+  dnsLookup(hostname, options) as Promise<Array<{ address: string; family: number }>>;
+
+function isLoopbackGatewayHost(hostname: string) {
+  return ["localhost", "127.0.0.1", "::1"].includes(
+    hostname.replace(/^\[|\]$/g, "").toLowerCase(),
+  );
+}
+function isPrivateOrReservedIpv4(address: string) {
+  const parts = address.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const [a, b, c] = parts;
+  return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && (b === 168 || (b === 0 && c === 0))) ||
+    (a === 198 && (b === 18 || b === 19)) || a >= 224;
+}
+function isPublicGatewayAddress(address: string) {
+  const version = isIP(address);
+  if (version === 4) return !isPrivateOrReservedIpv4(address);
+  if (version !== 6) return false;
+  const lower = address.toLowerCase();
+  return !(lower === "::" || lower === "::1" || lower.startsWith("fc") || lower.startsWith("fd") ||
+    /^fe[89ab]/.test(lower) || lower.startsWith("ff") || lower.startsWith("100:") ||
+    lower.startsWith("2001:db8:") || lower.startsWith("2001:2:") || lower.startsWith("2002:") ||
+    lower.startsWith("64:ff9b:"));
+}
+
+/** Verify a caller-chosen gateway resolves only to public addresses (unless it
+ * is an explicit localhost development endpoint) before sending its API key. */
+export async function assertSafeAiGatewayEndpoint(
+  baseUrl: string,
+  lookup: AiGatewayDnsLookup = defaultAiGatewayDnsLookup,
+) {
+  const url = new URL(baseUrl);
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  if (isLoopbackGatewayHost(hostname)) return;
+  if (isIP(hostname)) {
+    if (!isPublicGatewayAddress(hostname))
+      throw unprocessable("The gateway base URL must not use a private network address.");
+    return;
+  }
+  let addresses: Array<{ address: string; family: number }>;
+  try { addresses = await lookup(hostname, { all: true, verbatim: true }); }
+  catch { throw unprocessable("Could not resolve the gateway base URL. Try again."); }
+  if (!addresses.length || addresses.some(({ address }) => !isPublicGatewayAddress(address)))
+    throw unprocessable("The gateway base URL must not resolve to a private network address.");
+}
+
+/** Fixed provider endpoints; credentials are never sent to a caller-supplied
+ * URL or through a redirect. OpenAI-compatible accounts name their own https
+ * (or loopback http) gateway, which is re-checked here before any request. */
 export async function validateAiApiKey(
   provider: AiProvider,
   key: string,
   request: typeof fetch = fetch,
+  baseUrl?: string,
+  lookup: AiGatewayDnsLookup = defaultAiGatewayDnsLookup,
 ) {
   const endpoints = {
     anthropic: "https://api.anthropic.com/v1/models?limit=1",
@@ -144,9 +204,20 @@ export async function validateAiApiKey(
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
   };
+  if (provider === "openai_compatible") {
+    if (!baseUrl || !isAiGatewayBaseUrl(baseUrl))
+      throw unprocessable(
+        "Reconnect this account with its gateway base URL. Try again.",
+      );
+    await assertSafeAiGatewayEndpoint(baseUrl, lookup);
+  }
+  const endpoint =
+    provider === "openai_compatible"
+      ? `${baseUrl!.replace(/\/+$/, "")}/models`
+      : endpoints[provider];
   let response: Response;
   try {
-    response = await request(endpoints[provider], {
+    response = await request(endpoint, {
       redirect: "error",
       signal: AbortSignal.timeout(15000),
       headers:
@@ -281,7 +352,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
           "Use the existing provider sign-in flow to connect a subscription",
         );
       const attemptStartedAt = new Date();
-      await validateAiApiKey(input.provider, input.apiKey!);
+      await validateAiApiKey(input.provider, input.apiKey!, fetch, input.baseUrl);
       const result = await service.save(
         companyId,
         userId,
