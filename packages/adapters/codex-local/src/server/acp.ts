@@ -88,6 +88,12 @@ export async function resolveCodexExecutionEngineForRun(
   const selection = normalizeEngine(input.config.engine);
   // Engine availability must never change the agent's execution or permission contract.
   if (selection.engine === "cli") return selection;
+  // Managed AI connections with custom model providers (e.g. OpenAI-compatible
+  // gateways) merge their routing into config.toml in the CLI lane; when the
+  // operator did not explicitly request ACP, use CLI to preserve routing.
+  if (!selection.explicit && input.config.managedAiConnection != null) {
+    return { engine: "cli", explicit: false };
+  }
   const unavailable = (reason: string): CodexEngineSelection => ({
     ...selection,
     unavailableReason: `${reason} Repair the ACP setup, or explicitly set engine=cli to use the CLI engine.`,

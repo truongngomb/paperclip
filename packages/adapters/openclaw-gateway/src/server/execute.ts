@@ -448,6 +448,8 @@ function buildWakeText(
     "   - GET /api/issues/{issueId}",
     "   - GET /api/issues/{issueId}/comments",
     "   - Execute the issue instructions exactly. If the issue is actionable, take concrete action in this run; do not stop at a plan unless planning was requested.",
+    "   - If you lead or coordinate other agents (CTO, Chief of Staff, Tech Lead) and specialized direct reports exist, decompose cross-functional work into child issues with acceptance criteria and assign them to those reports; do not implement entire multi-tier features yourself.",
+    "   - Implementation authors must not be their sole verifiers: route software deliverables through QA, peer review, or independent end-to-end verification before reporting done.",
     "   - Leave durable progress with a clear next action. Use child issues for long or parallel delegated work instead of polling agents, sessions, or processes.",
     "   - Create child issues directly when you know what needs to be done; use POST /api/issues/{issueId}/interactions with kind suggest_tasks, ask_user_questions, or request_confirmation when the board/user must choose, answer, or confirm before you can continue.",
     "   - For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}; wait for acceptance before creating implementation subtasks.",

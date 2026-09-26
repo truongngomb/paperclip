@@ -37,6 +37,7 @@ import {
 } from "./codex-auth-cache.js";
 import { resolveCodexExecutionEngineForRun, testCodexAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -95,8 +96,10 @@ async function prepareCodexHelloProbe(input: {
   let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
   let preparedRuntimeWorkspaceLocalDir: string | null = null;
   let probeHomeLocalDir: string | null = null;
+  let preparedProviderConfig: Awaited<ReturnType<typeof prepareCodexRuntimeConfig>> | null = null;
 
   const cleanup = async () => {
+    await preparedProviderConfig?.cleanup().catch(() => {});
     await preparedRuntime?.restoreWorkspace().catch(() => {});
     if (preparedRuntimeWorkspaceLocalDir) {
       await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
@@ -178,6 +181,11 @@ async function prepareCodexHelloProbe(input: {
       };
     }
 
+    preparedProviderConfig = await prepareCodexRuntimeConfig({
+      env: input.env,
+      codexHome: probeHomeLocalDir,
+    });
+
     preparedRuntimeWorkspaceLocalDir = await fs.mkdtemp(
       path.join(os.tmpdir(), `paperclip-codex-envtest-${input.runId}-`),
     );
@@ -216,21 +224,39 @@ async function prepareCodexHelloProbe(input: {
     const probeHome = input.targetIsRemote
       ? path.posix.join(input.cwd, ".paperclip-runtime", "codex", `probe-home-${input.runId}`)
       : path.join(os.tmpdir(), `paperclip-codex-probe-${input.runId}`);
-    // The local finally path retries cleanup independently of the model result.
-    if (!input.targetIsRemote) probeHomeLocalDir = probeHome;
+    if (input.targetIsRemote) {
+      return {
+        command: "sh",
+        args: [
+          "-c",
+          `set -e; umask 077; mkdir -p "$CODEX_HOME"; printf "%s" "$_PAPERCLIP_CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"; unset _PAPERCLIP_CODEX_AUTH_JSON; cleanup() { result=$?; trap - EXIT; rm -f "$CODEX_HOME/auth.json" || true; rm -rf "$CODEX_HOME" || printf '%s\\n' '${PROBE_CLEANUP_WARNING}' >&2; exit "$result"; }; trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; "$0" "$@"`,
+          input.command,
+          ...input.args,
+        ],
+        env: {
+          ...input.env,
+          CODEX_HOME: probeHome,
+          _PAPERCLIP_CODEX_AUTH_JSON: JSON.stringify({ OPENAI_API_KEY: input.probeApiKey }),
+        },
+        cleanup,
+      };
+    }
+
+    probeHomeLocalDir = probeHome;
+    await fs.mkdir(probeHome, { recursive: true, mode: 0o700 });
+    await fs.writeFile(
+      path.join(probeHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: input.probeApiKey }),
+      { mode: 0o600 },
+    );
+    preparedProviderConfig = await prepareCodexRuntimeConfig({
+      env: input.env,
+      codexHome: probeHome,
+    });
     return {
-      command: "sh",
-      args: [
-        "-c",
-        `set -e; umask 077; mkdir -p "$CODEX_HOME"; printf "%s" "$_PAPERCLIP_CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"; unset _PAPERCLIP_CODEX_AUTH_JSON; cleanup() { result=$?; trap - EXIT; rm -f "$CODEX_HOME/auth.json" || true; rm -rf "$CODEX_HOME" || printf '%s\\n' '${PROBE_CLEANUP_WARNING}' >&2; exit "$result"; }; trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; "$0" "$@"`,
-        input.command,
-        ...input.args,
-      ],
-      env: {
-        ...input.env,
-        CODEX_HOME: probeHome,
-        _PAPERCLIP_CODEX_AUTH_JSON: JSON.stringify({ OPENAI_API_KEY: input.probeApiKey }),
-      },
+      command: input.command,
+      args: input.args,
+      env: { ...input.env, CODEX_HOME: probeHome },
       cleanup,
     };
   }

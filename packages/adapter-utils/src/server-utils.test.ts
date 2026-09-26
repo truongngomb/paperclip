@@ -1416,6 +1416,28 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "do not stop at a plan",
     );
+    // Leads with direct reports must delegate instead of implementing
+    // multi-tier features themselves, and implementation authors must not
+    // be their sole verifiers — otherwise a CTO-style agent swallows all
+    // engineering work and ships unverified deliverables.
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "Managerial and lead delegation",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "Do NOT write entire multi-tier feature implementations yourself",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "Independent quality gates",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "Authors of code implementations must not be the sole verifiers",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "without gateway/proxy failures",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "Unicode/UTF-8",
+    );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "clear final disposition",
     );
@@ -1528,6 +1550,14 @@ describe("renderPaperclipWakePrompt", () => {
       expect(prompt).toContain(
         "Execution contract: take concrete action in this heartbeat",
       );
+      expect(prompt).toContain(
+        "do NOT implement entire multi-tier features yourself",
+      );
+      expect(prompt).toContain(
+        "Implementation authors must not be their sole verifiers",
+      );
+      expect(prompt).toContain("no gateway/proxy failures");
+      expect(prompt).toContain("no Unicode/UTF-8 corruption");
       expect(prompt).toContain("clear final disposition");
       expect(prompt).toContain(
         "Immediately before returning, verify that Paperclip records one of those dispositions",
@@ -1552,6 +1582,62 @@ describe("renderPaperclipWakePrompt", () => {
       );
       expect(prompt).toContain("named unblock owner/action");
     }
+  });
+
+  it("renders the direct-reports delegation roster for leads", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-LEAD",
+        title: "Build the portal",
+        status: "in_progress",
+      },
+      directReports: [
+        { id: "agent-fe", name: "Frontend Engineer", role: "engineer", title: "Frontend Engineer" },
+        { id: "agent-be", name: "Backend Engineer", role: "engineer", title: null },
+        { id: "agent-qa", name: "QA Engineer", role: "qa", title: "QA Engineer" },
+      ],
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("## Direct reports (delegation targets)");
+    expect(prompt).toContain("create child issues with clear acceptance criteria");
+    expect(prompt).toContain(
+      "Frontend Engineer (role: engineer, title: Frontend Engineer) — agentId agent-fe",
+    );
+    expect(prompt).toContain("Backend Engineer (role: engineer) — agentId agent-be");
+    expect(prompt).toContain("QA Engineer (role: qa, title: QA Engineer) — agentId agent-qa");
+    // The roster alone never renders for external chat turns or recovery runs.
+    expect(prompt).not.toContain("do not implement their part yourself. Extra");
+  });
+
+  it("omits the delegation roster for agents without direct reports", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-IC",
+        title: "Implement the button",
+        status: "in_progress",
+      },
+      directReports: [],
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).not.toContain("## Direct reports (delegation targets)");
   });
 
   it.each(["answered", "accepted"])(
@@ -3752,6 +3838,10 @@ describe("buildPaperclipEnv", () => {
     "PAPERCLIP_LISTEN_PORT",
     "HOST",
     "PORT",
+    "LANG",
+    "LC_ALL",
+    "PYTHONIOENCODING",
+    "PYTHONUTF8",
   ] as const;
 
   function withEnv(overrides: Record<string, string>, fn: () => void) {
@@ -3806,6 +3896,16 @@ describe("buildPaperclipEnv", () => {
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
       },
     );
+  });
+
+  it("forces UTF-8 locale and encoding vars for agent runtimes regardless of host env", () => {
+    withEnv({ LANG: "C", PYTHONIOENCODING: "latin-1" }, () => {
+      const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+      expect(env.LANG).toBe("en_US.UTF-8");
+      expect(env.LC_ALL).toBe("en_US.UTF-8");
+      expect(env.PYTHONIOENCODING).toBe("utf-8");
+      expect(env.PYTHONUTF8).toBe("1");
+    });
   });
 });
 

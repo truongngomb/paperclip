@@ -41,14 +41,18 @@ function resolveOpenAiApiKey(): string | null {
   return configKey && configKey.length > 0 ? configKey : null;
 }
 
-async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
+async function fetchOpenAiModels(
+  apiKey: string,
+  endpoint = OPENAI_MODELS_ENDPOINT,
+): Promise<AdapterModel[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_MODELS_TIMEOUT_MS);
   try {
-    const response = await fetch(OPENAI_MODELS_ENDPOINT, {
+    const response = await fetch(endpoint, {
       headers: {
         Authorization: `Bearer ${apiKey}`,
       },
+      redirect: "error",
       signal: controller.signal,
     });
     if (!response.ok) return [];
@@ -68,6 +72,14 @@ async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function listCodexModelsForEndpoint(
+  apiKey: string,
+  endpoint: string,
+): Promise<AdapterModel[]> {
+  const fetched = await fetchOpenAiModels(apiKey, endpoint);
+  return fetched.length > 0 ? mergedWithFallback(fetched) : dedupeModels(codexFallbackModels);
 }
 
 async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {

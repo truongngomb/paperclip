@@ -1,7 +1,7 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
-import { completionContracts } from "@paperclipai/db";
+import { agents, completionContracts } from "@paperclipai/db";
 import type { StrictCompletionContractInput } from "../../vendor/paperclip-runner/index.js";
 
 import { nativeSha256 } from "./canonical.js";
@@ -35,11 +35,18 @@ export function nativeCompletionRequestsForComments(
   });
 }
 
-export function resolveNativeCompletionPolicy(issue: {
-  reviewPolicy?: string | null;
-}) {
+export function resolveNativeCompletionPolicy(
+  issue: {
+    reviewPolicy?: string | null;
+  },
+  options: { companyHasOtherAgents?: boolean } = {},
+) {
   const externalReviewRequired =
-    issue.reviewPolicy === "human_only" || issue.reviewPolicy === "not_creator";
+    issue.reviewPolicy === "human_only" ||
+    issue.reviewPolicy === "not_creator" ||
+    // Org default: multi-agent companies require independent verification,
+    // so completion authority leaves the author's own claim.
+    (issue.reviewPolicy == null && options.companyHasOtherAgents === true);
   return externalReviewRequired
     ? { risk: "standard", completionAuthority: "server_arbiter" } as const
     : { risk: "low", completionAuthority: "agent_claim_policy" } as const;
@@ -112,7 +119,20 @@ export async function ensureNativeCompletionContract(input: {
       input.companyId,
       input.issue.id,
     ].join(":")}, 0))`);
-    const policy = resolveNativeCompletionPolicy(input.issue);
+    const companyAgents = await tx
+      .select({ id: agents.id })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, input.companyId),
+          isNull(agents.pausedAt),
+          input.actorId ? ne(agents.id, input.actorId) : undefined,
+        ),
+      )
+      .limit(1);
+    const policy = resolveNativeCompletionPolicy(input.issue, {
+      companyHasOtherAgents: companyAgents.length > 0,
+    });
     const latest = await tx
       .select()
       .from(completionContracts)
