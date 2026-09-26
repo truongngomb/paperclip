@@ -43,6 +43,7 @@ server/src/**/*.js.map
 server/src/**/*.d.ts
 server/src/**/*.d.ts.map
 tmp/
+.tmp-ai-tests-*
 feedback-export-*
 diagnostics/
 
@@ -51,6 +52,7 @@ diagnostics/
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
+.paperclip-local-dev/
 .paperclip-runtime/
 /.idea/
 /.agents/
