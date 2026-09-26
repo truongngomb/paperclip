@@ -3,8 +3,15 @@
   "configurations": [
     {
       "name": "paperclip",
-      "port": 3121,
-      "url": "http://localhost:3121"
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@paperclipai/server", "dev"],
+      "env": {
+        "PAPERCLIP_HOME": "../.paperclip-local-dev",
+        "PAPERCLIP_UI_DEV_MIDDLEWARE": "true",
+        "PAPERCLIP_AGENT_JWT_SECRET": "paperclip-dev-secret"
+      },
+      "port": 3100,
+      "autoPort": false
     },
     {
       "name": "storybook",

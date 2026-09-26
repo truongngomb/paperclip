@@ -530,6 +530,20 @@
   label {
     touch-action: manipulation;
   }
+  /*
+    Pressable controls show the pointer cursor. In the base layer so any
+    explicit cursor utility still wins (cursor-not-allowed on a pending or
+    blocked control, cursor-grab on drag handles) and disabled controls,
+    excluded by :not(:disabled), keep their own cursor.
+  */
+  button:not(:disabled),
+  [role="button"]:not(:disabled),
+  [role="tab"]:not(:disabled),
+  [role="menuitem"]:not(:disabled),
+  [role="option"]:not(:disabled),
+  summary:not(:disabled) {
+    cursor: pointer;
+  }
   /* Let font-mono (utilities layer) override for monospace editors */
   .paperclip-mdxeditor [class*="_placeholder_"],
   .paperclip-mdxeditor-content {

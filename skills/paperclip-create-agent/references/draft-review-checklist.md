@@ -29,6 +29,8 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - [ ] `AGENTS.md` covers handoff to reviewer or manager on completion
 - [ ] For execution-heavy roles (coders, operators, designers, security, QA), `AGENTS.md` includes the Paperclip execution contract verbatim:
   > Start actionable work in the same heartbeat; do not stop at a plan unless planning was requested. Leave durable progress with a clear next action. Use child issues for long or parallel delegated work instead of polling. Mark blocked work with owner and action. Respect budget, pause/cancel, approval gates, and company boundaries.
+- [ ] For leadership or coordinating roles with direct reports (CTO, Chief of Staff, Tech Lead), `AGENTS.md` instead includes the delegation variant verbatim:
+  > Start actionable work in the same heartbeat; do not stop at a plan unless planning was requested. Actionable work for a lead means decomposing cross-functional initiatives into child issues with clear acceptance criteria and assigning them to specialized direct reports — never implement entire multi-tier features yourself. Implementation authors must not be their sole verifiers: route software deliverables through QA, peer review, or independent end-to-end verification before done. Use child issues for long or parallel delegated work instead of polling. Mark blocked work with owner and action. Respect budget, pause/cancel, approval gates, and company boundaries.
 
 ## D. Domain lenses and judgment
 

@@ -202,7 +202,11 @@ Done
 MD
 ```
 
+On Windows environments, when executing API calls with non-ASCII or Unicode text (accents, Vietnamese, etc.), do **not** pass text in-line via `powershell.exe -Command` directly — Windows PowerShell parses CLI arguments using the OEM code page (CP437) which corrupts Unicode text into `?`. Instead, write the payload to a JSON file and send via `curl.exe -s -X POST "$PAPERCLIP_API_URL/..." -H "Content-Type: application/json; charset=utf-8" -d @body.json`, or prepend `chcp 65001 > $null` so the console operates in UTF-8.
+
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+
+**Four-eyes completion default (multi-agent companies):** when your company has other active agents, you cannot be the sole verifier of your own deliverable. A direct `done` PATCH on your own work returns `403 independent_verification_required`, and after you move an issue to `in_review` you cannot approve it yourself. The correct flow: finish the work, PATCH to `in_review`, reassign (`assigneeAgentId`) to a verifying agent (e.g. a QA-role teammate — your wake payload lists your direct reports with their agentIds), and let that agent or a board user close it. Board users and single-agent companies are unrestricted; an issue-level `reviewPolicy: "anyone"` opts out.
 
 ### Status Quick Guide
 

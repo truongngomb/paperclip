@@ -450,6 +450,12 @@
       "darkAsset": "/brands/apps/openai-dark.svg"
     },
     {
+      "slug": "openai-compatible",
+      "provider": "OpenAI-compatible",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/openai-compatible.svg"
+    },
+    {
       "slug": "openrouter",
       "provider": "OpenRouter",
       "catalogVisible": true,
