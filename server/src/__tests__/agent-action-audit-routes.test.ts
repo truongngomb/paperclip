@@ -15,6 +15,9 @@ import {
   issueDocuments,
   issues,
   principalPermissionGrants,
+  secretAccessEvents,
+  toolAccessAuditEvents,
+  toolCallEvents,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -150,6 +153,57 @@ describePostgres("agent action audit routes", () => {
       },
     ]).returning();
   }
+
+  it("erases only company-scoped audit event logs for an instance admin", async () => {
+    const { company, agent, run } = await seed();
+    const otherCompany = await db
+      .insert(companies)
+      .values({ name: "Other audit company", issuePrefix: `OT${randomUUID().slice(0, 6).toUpperCase()}` })
+      .returning()
+      .then((rows) => rows[0]!);
+    await db.insert(toolCallEvents).values([
+      { companyId: company.id, eventType: "call_completed", outcome: "success" },
+      { companyId: otherCompany.id, eventType: "call_completed", outcome: "success" },
+    ]);
+    await db.insert(toolAccessAuditEvents).values([
+      { companyId: company.id, action: "connection.checked", outcome: "success" },
+      { companyId: otherCompany.id, action: "connection.checked", outcome: "success" },
+    ]);
+    await db.insert(secretAccessEvents).values([
+      { companyId: company.id, provider: "local_encrypted", actorType: "system", consumerType: "agent", consumerId: agent.id, outcome: "success", heartbeatRunId: run.id },
+      { companyId: otherCompany.id, provider: "local_encrypted", actorType: "system", consumerType: "agent", consumerId: "other-agent", outcome: "success" },
+    ]);
+    const admin = await createApp(db, {
+      type: "board",
+      userId: "admin",
+      companyIds: [company.id],
+      source: "session",
+      isInstanceAdmin: true,
+    });
+    const denied = await request(await createApp(db, {
+      type: "board",
+      userId: "member",
+      companyIds: [company.id],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .delete(`/api/companies/${company.id}/audit`)
+      .send({ confirmation: "DELETE AUDIT" });
+    expect(denied.status).toBe(403);
+
+    const cleared = await request(admin)
+      .delete(`/api/companies/${company.id}/audit`)
+      .send({ confirmation: "DELETE AUDIT" });
+    expect(cleared.status).toBe(204);
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, company.id))).toEqual([]);
+    expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.companyId, company.id))).toEqual([]);
+    expect(await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.companyId, company.id))).toEqual([]);
+    expect(await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.companyId, company.id))).toEqual([]);
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, otherCompany.id))).toHaveLength(0);
+    expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.companyId, otherCompany.id))).toHaveLength(1);
+    expect(await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.companyId, otherCompany.id))).toHaveLength(1);
+    expect(await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.companyId, otherCompany.id))).toHaveLength(1);
+  });
 
   it("denies agents and board users without the audit permission", async () => {
     const { company, agent } = await seed();

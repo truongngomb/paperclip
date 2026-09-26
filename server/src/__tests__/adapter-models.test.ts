@@ -6,7 +6,7 @@ import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-loca
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
 import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
-import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
+import { listCodexModelsForEndpoint, resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
 vi.mock("acpx/runtime", () => ({
@@ -239,6 +239,27 @@ describe("adapter model listing", () => {
     expect(initial.some((model) => model.id === "gpt-5")).toBe(true);
     expect(refreshed.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
     expect(refreshed.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
+  });
+
+  it("lists models from an explicit OpenAI-compatible gateway without using ambient credentials", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: "gateway-only-model" }] }),
+    } as Response);
+
+    const models = await listCodexModelsForEndpoint(
+      "gateway-api-key",
+      "https://gateway.example.test/v1/models",
+    );
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://gateway.example.test/v1/models",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer gateway-api-key" },
+        redirect: "error",
+      }),
+    );
+    expect(models.some((model) => model.id === "gateway-only-model")).toBe(true);
   });
 
   it("falls back to static codex models when OpenAI model discovery fails", async () => {

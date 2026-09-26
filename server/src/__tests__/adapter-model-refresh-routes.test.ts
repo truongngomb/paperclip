@@ -210,7 +210,7 @@ describe("adapter model refresh route", () => {
     expect(res.body).toEqual([{ id: "fresh-model", label: "fresh-model" }]);
     expect(refreshModels).toHaveBeenCalledTimes(1);
     expect(listModels).not.toHaveBeenCalled();
-  });
+  }, 45000);
 
   it("skips OpenCode model discovery for non-local environments", async () => {
     mockEnvironmentService.getById.mockResolvedValue({

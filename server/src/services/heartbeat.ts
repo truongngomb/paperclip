@@ -14,7 +14,7 @@ import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAs
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { managedAiSessionFingerprintConfig, prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
-import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiProviderAppSlug } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
@@ -8021,11 +8021,35 @@ export async function buildPaperclipWakePayload(input: {
           notice: externalAttachmentOmissionNotice(omission),
         }))
     : [];
+  // Direct-reports roster: makes delegation executable instead of advisory.
+  // A woken lead needs the exact agentIds of its reports to assign child
+  // issues; without them "delegate to your team" degrades into doing the
+  // work itself (the failure mode this field exists to prevent).
+  const directReports = input.agentId && !conversationMode
+    ? await input.db
+        .select({
+          id: agents.id,
+          name: agents.name,
+          role: agents.role,
+          title: agents.title,
+        })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, input.companyId),
+            eq(agents.reportsTo, input.agentId),
+            isNull(agents.pausedAt),
+          ),
+        )
+        .orderBy(asc(agents.name))
+    : [];
+
   const payload = {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     executionContinuation: input.contextSnapshot.executionContinuation ?? null,
     attachmentOmissions,
     externalChatProvider,
+    directReports,
     recovery:
       !executionAlreadyReconciled && (recoveryAction || recoveryCause)
         ? {
@@ -21208,7 +21232,7 @@ export function heartbeatService(
             return;
           }
           if (responsibleUserId && issueId && aiBinding.mode === "responsible_user") {
-            await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
+            await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiProviderAppSlug(aiBinding.provider), { purpose: "ai" }).catch(() => {
               logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
             });
           }

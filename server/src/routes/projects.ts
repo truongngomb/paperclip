@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, issues } from "@paperclipai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { persistActivity, publishActivity } from "../services/activity-log.js";
 import { z } from "zod";
@@ -21,7 +21,7 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
+import { accessService, issueService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -776,7 +776,36 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
-    const project = await svc.remove(id);
+    if (!existing.archivedAt) {
+      throw conflict("Only archived projects can be permanently deleted");
+    }
+    const { project, taskCount } = await db.transaction(async (tx) => {
+      const taskIds = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.projectId, id));
+      const taskIdValues = taskIds.map((task) => task.id);
+
+      // Delete project-scoped activityLog entries. Issue/comment/document
+      // activity is cleaned up inside each taskService.remove() transaction.
+      await tx.delete(activityLog).where(
+        and(
+          eq(activityLog.companyId, existing.companyId),
+          and(
+            eq(activityLog.entityType, "project"),
+            eq(activityLog.entityId, id),
+          ),
+        ),
+      );
+
+      const taskService = issueService(tx as unknown as Db);
+      for (const task of taskIds) {
+        await taskService.remove(task.id);
+      }
+
+      const project = await projectService(tx as unknown as Db).remove(id);
+      return { project, taskCount: taskIds.length };
+    });
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
@@ -793,7 +822,7 @@ export function projectRoutes(db: Db) {
       entityId: project.id,
     });
 
-    res.json(project);
+    res.json({ ...project, deletedTaskCount: taskCount });
   });
 
   return router;

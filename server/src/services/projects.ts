@@ -5,6 +5,8 @@ import {
   projectGoals,
   goals,
   issues,
+  costEvents,
+  financeEvents,
   budgetPolicies,
   pluginManagedResources,
   plugins,
@@ -946,15 +948,31 @@ export function projectService(db: Db) {
     },
 
     remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+      db.transaction(async (tx) => {
+        await tx
+          .update(issues)
+          .set({ projectId: null, projectWorkspaceId: null })
+          .where(eq(issues.projectId, id));
+
+        await tx
+          .update(costEvents)
+          .set({ projectId: null })
+          .where(eq(costEvents.projectId, id));
+
+        await tx
+          .update(financeEvents)
+          .set({ projectId: null })
+          .where(eq(financeEvents.projectId, id));
+
+        const rows = await tx
+          .delete(projects)
+          .where(eq(projects.id, id))
+          .returning();
+
+        const row = rows[0] ?? null;
+        if (!row) return null;
+        return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+      }),
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db

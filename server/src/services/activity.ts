@@ -4,6 +4,9 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  secretAccessEvents,
+  toolAccessAuditEvents,
+  toolCallEvents,
   documentRevisions,
   environmentLeases,
   environments,
@@ -328,6 +331,23 @@ export function activityService(db: Db) {
   }
 
   return {
+    clearCompanyAuditLogs: async (companyId: string) => {
+      await db.transaction(async (tx) => {
+        // These are audit/event leaves. Keep the operational records they refer
+        // to (runs, tool requests, costs, decisions, tasks, and secrets).
+        await tx
+          .delete(toolCallEvents)
+          .where(eq(toolCallEvents.companyId, companyId));
+        await tx
+          .delete(toolAccessAuditEvents)
+          .where(eq(toolAccessAuditEvents.companyId, companyId));
+        await tx
+          .delete(secretAccessEvents)
+          .where(eq(secretAccessEvents.companyId, companyId));
+        await tx.delete(activityLog).where(eq(activityLog.companyId, companyId));
+      });
+    },
+
     list: (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId)];
       const limit = normalizeActivityLimit(filters.limit);

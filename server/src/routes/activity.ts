@@ -4,7 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 import { badRequest, forbidden } from "../errors.js";
@@ -88,6 +88,10 @@ function auditRowsToCsv(rows: AuditCsvRow[]): string {
   // Trailing newline keeps POSIX tools + spreadsheet importers happy.
   return `${lines.join("\r\n")}\r\n`;
 }
+
+const clearCompanyAuditSchema = z.object({
+  confirmation: z.literal("DELETE AUDIT"),
+});
 
 const createActivitySchema = z.object({
   actorType: z.enum(["agent", "user", "system", "plugin"]).optional().default("system"),
@@ -218,6 +222,14 @@ export function activityRoutes(db: Db) {
     }
     return issueSvc.getById(rawId);
   }
+
+  router.delete("/companies/:companyId/audit", validate(clearCompanyAuditSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertInstanceAdmin(req);
+    assertCompanyAccess(req, companyId);
+    await svc.clearCompanyAuditLogs(companyId);
+    res.status(204).end();
+  });
 
   router.get("/companies/:companyId/activity", async (req, res) => {
     const companyId = req.params.companyId as string;

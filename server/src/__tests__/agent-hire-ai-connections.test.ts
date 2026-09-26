@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
@@ -22,7 +21,7 @@ let db: ReturnType<typeof createDb>;
 let home: string;
 
 beforeAll(async () => {
-  home = await mkdtemp(path.join(os.tmpdir(), "paperclip-hire-ai-"));
+  home = await mkdtemp(path.join(process.cwd(), ".tmp-ai-tests-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "hire-ai");
   database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");

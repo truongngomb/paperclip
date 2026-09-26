@@ -1,11 +1,12 @@
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
+import { listCodexModelsForEndpoint } from "../adapters/codex-models.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, aiGatewayConfigSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
-import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
+import { assertAiConnectionCreateAccess, assertSafeAiGatewayEndpoint, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -3241,6 +3242,40 @@ export function agentRoutes(
         : provider === "opencode" ? "opencode_local"
           : provider === "aws_agentcore" ? type : "codex_local"
       : type;
+    const agentId = asNonEmptyString(req.query.agentId);
+    if (agentId && modelAdapterType === "codex_local") {
+      const agent = await svc.getById(agentId);
+      if (!agent || agent.companyId !== companyId) {
+        throw notFound("Agent not found");
+      }
+      await assertCanReadAgent(req, agent);
+      const binding = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+      if (binding?.provider === "openai_compatible") {
+        const selection = await aiConnectionService(db).select({
+          companyId,
+          agentId: agent.id,
+          userId: responsibleUserForAiRequest(req),
+          adapterType: agent.adapterType,
+          model: agent.adapterConfig.model,
+          runnerProvider: agent.adapterConfig.provider,
+          acpxAgent: agent.adapterConfig.acpxAgent,
+          binding,
+        });
+        const gateway = aiGatewayConfigSchema.safeParse(selection.connection.config.aiGateway);
+        if (!gateway.success) {
+          throw unprocessable("Reconnect this OpenAI-compatible connection with its gateway base URL", {
+            code: "ai_connection_incompatible",
+          });
+        }
+        await assertSafeAiGatewayEndpoint(gateway.data.baseUrl);
+        const apiKey = await aiConnectionService(db).credential(selection);
+        res.json(await listCodexModelsForEndpoint(
+          apiKey,
+          `${gateway.data.baseUrl.replace(/\/+$/, "")}/models`,
+        ));
+        return;
+      }
+    }
     if (modelAdapterType === "opencode_local" && environment && environment.driver !== "local") {
       res.json(requireServerAdapter(modelAdapterType).models ?? []);
       return;
@@ -3293,7 +3328,7 @@ export function agentRoutes(
     });
   }
 
-  async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding) {
+  async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, selectionConnection?: { config: Record<string, unknown> }) {
     await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget);
     const result = await requireServerAdapter(adapterType).testEnvironment(context);
     if (result.status === "fail") return result;
@@ -3316,9 +3351,12 @@ export function agentRoutes(
     if (resolvedMethod === "api_key") {
       const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
       const key = envKey ? parseObject(context.config.env)[envKey] : undefined;
+      const gatewayBaseUrl = aiGatewayConfigSchema.safeParse(
+        selectionConnection?.config.aiGateway,
+      ).data?.baseUrl;
       try {
         if (typeof key !== "string" || !key) throw unprocessable("The selected account's API key was not available to verify.");
-        await validateAiApiKey(binding.provider, key);
+        await validateAiApiKey(binding.provider, key, fetch, gatewayBaseUrl);
         result.checks.push({ code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." });
       } catch (error) {
         result.status = "fail";
@@ -3327,7 +3365,7 @@ export function agentRoutes(
       return result;
     }
     if (!result.checks.some(check => check.code.includes("hello_probe"))) {
-      const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local" }[binding.provider];
+      const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openai_compatible: "codex_local", openrouter: "opencode_local", xai: "grok_local" }[binding.provider];
       const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
       result.checks.push(...probe.checks);
       result.status = probe.status === "fail" ? "fail" : result.status === "warn" || probe.status === "warn" ? "warn" : "pass";
@@ -3361,7 +3399,7 @@ export function agentRoutes(
       try {
         if (!target.executionTarget && target.fallbackChecks.length > 0) throw unprocessable("The agent environment is not available for adoption");
         managed = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true });
-        const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding);
+        const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding, selection.connection);
         if (result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) throw unprocessable("The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks.", {
           code: "ai_connection_validation_failed",
           checks: result.checks.filter(check => check.level === "error" || check.code === ADAPTER_AUTH_MISSING_CHECK_CODE).map(check => ({ code: check.code, level: check.level })),
@@ -3556,7 +3594,7 @@ export function agentRoutes(
         const managed = aiBinding ? await prepareManagedAiRuntime(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !req.body.agentId, allowUninstalledShared: !req.body.agentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }) : null;
         let result;
         try {
-          result = managed && aiBinding ? await testManagedEnvironment(type, { companyId, adapterType: type, config: managed.config, executionTarget, environmentName }, aiBinding) : await adapter.testEnvironment({ companyId, adapterType: type, config: effectiveAdapterConfig, executionTarget, environmentName });
+          result = managed && aiBinding ? await testManagedEnvironment(type, { companyId, adapterType: type, config: managed.config, executionTarget, environmentName }, aiBinding, managed.connection) : await adapter.testEnvironment({ companyId, adapterType: type, config: effectiveAdapterConfig, executionTarget, environmentName });
           if (managed) result.checks.unshift({ code: "ai_connection_tested", level: "info", message: `Tested ${managed.accountName} — ${managed.accountOwnerUserId ? managed.accountOwnerUserId === responsibleUserForAiRequest(req) ? "your personal account" : "the owner’s account authorized for this agent" : "company-shared account"}. Responsible user: ${req.actor.type === "agent" ? responsibleUserForAiRequest(req) ?? "unavailable" : "the signed-in user"}.` });
         } finally { await managed?.cleanup(); }
 
@@ -5359,8 +5397,24 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
-    const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
+    const clearsAiConnection =
+      requestedRuntimeConfig != null &&
+      Object.prototype.hasOwnProperty.call(requestedRuntimeConfig, "aiConnection") &&
+      requestedRuntimeConfig.aiConnection === null;
+    if (clearsAiConnection && requestedRuntimeConfig) {
+      delete requestedRuntimeConfig.aiConnection;
+    } else if (
+      existing.runtimeConfig.aiConnection &&
+      requestedRuntimeConfig &&
+      !Object.prototype.hasOwnProperty.call(requestedRuntimeConfig, "aiConnection")
+    ) {
+      requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
+    }
+    const nextAiBinding = clearsAiConnection
+      ? undefined
+      : aiConnectionBindingSchema.safeParse(
+          requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection,
+        ).data;
     if (nextAiBinding) {
       await assertCanUpdateAgent(req, existing);
       const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
